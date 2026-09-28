@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/HyGeoIceFairy/BaldrForceEXE-Toolkit/security/advisories/new
+    about: 私下报告可能影响存档完整性、任意文件访问或执行的漏洞

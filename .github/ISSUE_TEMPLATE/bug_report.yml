@@ -1,0 +1,47 @@
+name: 错误报告
+description: 报告可复现的程序错误
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: checkboxes
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 若问题来自公开发行包，我使用的是 GitHub Releases 中最新的受支持版本；若来自源码，我会说明提交号和工作区状态。
+          required: true
+        - label: 若问题涉及写入或恢复，我已完全退出游戏及启动器并保留原始存档备份。
+          required: true
+        - label: 我不会上传游戏文件、存档、研究映像或未经人工脱敏的诊断。
+          required: true
+  - type: input
+    attributes:
+      label: 工具版本
+      placeholder: 例如 0.4.0；源码运行时请附提交号和工作区状态
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11
+        - Windows 10
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 问题描述
+      description: 说明实际结果和预期结果。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现步骤
+      description: 提供能够稳定复现问题的最少步骤。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 已脱敏诊断
+      description: 可粘贴工具导出的诊断；提交前删除个人路径、文件名、哈希和其他敏感信息。不要上传存档或游戏文件。
+      render: text

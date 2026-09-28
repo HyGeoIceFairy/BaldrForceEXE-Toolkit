@@ -1,0 +1,41 @@
+BALDR FORCE EXE 修改器 0.4.0
+第三方软件声明
+
+本发行包包含或依赖以下第三方软件：
+
+1. Python
+   Copyright (c) Python Software Foundation.
+   License: Python Software Foundation License Version 2.
+   https://docs.python.org/3/license.html
+
+2. PySide6 / Qt for Python and Shiboken6
+   Copyright (C) The Qt Company Ltd. and contributors.
+   Distributed in this package under the GNU Lesser General Public License
+   version 3 (LGPL-3.0-only). The complete license text is included as
+   LICENSES/LGPL-3.0-only.txt, together with the GPL-3.0-only text it
+   supplements at LICENSES/GPL-3.0-only.txt.
+   https://doc.qt.io/qtforpython-6/licenses.html
+
+3. Qt 6 libraries distributed by PySide6
+   Copyright (C) The Qt Company Ltd. and other contributors.
+   The Qt libraries used by this application are dynamically linked and
+   distributed under LGPL-3.0-only. The LGPL-3.0-only and GPL-3.0-only texts
+   are included in LICENSES. Module-specific third-party notices remain in
+   the corresponding binaries and are documented by Qt.
+   https://doc.qt.io/qt-6/licensing.html
+
+4. PyInstaller bootloader
+   Copyright (c) PyInstaller Development Team.
+   License: GNU General Public License version 2 with a special exception
+   permitting distribution of bundled applications.
+   https://pyinstaller.org/en/stable/license.html
+
+mypy and Ruff are used only during development and are not bundled in the
+application.
+
+BALDR FORCE EXE, its executable files, resources, and user save files are not
+part of this project and are not included in the distribution.
+
+BALDR FORCE EXE and related names are trademarks or properties of their
+respective owners. This project is an independent community tool and is not
+affiliated with or endorsed by the game's developers or publishers.

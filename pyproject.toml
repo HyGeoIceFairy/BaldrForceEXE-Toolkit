@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baldr-force-modifier"
+version = "0.4.0"
+description = "面向 Windows 的 BALDR FORCE EXE 存档编辑与实时战斗修改工具"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "HyGeoIceFairy" },
+]
+keywords = ["BALDR FORCE EXE", "save editor", "Windows"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Games/Entertainment",
+]
+dependencies = ["PySide6>=6.8,<7"]
+
+[project.urls]
+Homepage = "https://github.com/HyGeoIceFairy/BaldrForceEXE-Toolkit"
+Repository = "https://github.com/HyGeoIceFairy/BaldrForceEXE-Toolkit.git"
+Issues = "https://github.com/HyGeoIceFairy/BaldrForceEXE-Toolkit/issues"
+
+[project.optional-dependencies]
+dev = ["mypy>=1.13", "PyInstaller>=6.11,<7", "ruff>=0.13,<1"]
+
+[project.scripts]
+bfmod-diagnostics = "bfmod.diagnostics:main"
+baldr-force-modifier = "bfmod.gui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

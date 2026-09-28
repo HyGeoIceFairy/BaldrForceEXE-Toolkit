@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+build/
+dist/
+release/
+/.scratch/
+
+# 本地游戏参考资料和私人存档基线不进入版本控制。
+/BFWT.htm
+/BFWT.xls
+/work/
+/*.spec
+*.dat
+*.pac
+*.waz
+*.exe
+*.dll
+*.zip
+*.dmp
+*.sav
+*.bak
+*.log
