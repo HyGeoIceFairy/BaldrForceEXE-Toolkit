@@ -92,12 +92,15 @@ class EffectPermissions:
     heat_maintenance: bool = False
     force_crash_refill: bool = False
     weapon_repeat: bool = False
+    force_crash_maintenance: bool = False
 
     def __post_init__(self) -> None:
         if self.health_maintenance and not self.health_restore:
             raise ValueError("持续血量写入必须先具有一次回血授权")
         if self.heat_maintenance and not self.heat_reduce:
             raise ValueError("持续热量写入必须先具有一次降热授权")
+        if self.force_crash_maintenance and not self.force_crash_refill:
+            raise ValueError("持续 FC 写入必须先具有一次补充授权")
 
 
 @dataclass(frozen=True)
@@ -144,8 +147,7 @@ class PlayerStateLayout:
         ):
             raise ValueError("已验证战斗状态必须位于字段白名单内")
         if any(
-            len(scene.scene_guard_values) != len(self.scene_guards)
-            for scene in self.battle_scenes
+            len(scene.scene_guard_values) != len(self.scene_guards) for scene in self.battle_scenes
         ):
             raise ValueError("战斗场景签名必须覆盖全部关联场景字段")
         if any(
@@ -185,8 +187,7 @@ class HeatWriteLayout:
 
     def __post_init__(self) -> None:
         if self.natural_zero_transition is not None and (
-            type(self.natural_zero_transition) is not int
-            or self.natural_zero_transition <= 0
+            type(self.natural_zero_transition) is not int or self.natural_zero_transition <= 0
         ):
             raise ValueError("热量自然归零过渡值必须为正整数")
 
@@ -371,6 +372,7 @@ class RealtimeSnapshot:
     fingerprints_valid: bool
     message: str
     active_effects: tuple[str, ...] = ()
+    recoverable: bool = False
 
 
 class RealtimeMonitor:
@@ -392,6 +394,8 @@ class RealtimeMonitor:
         self._weapon_repeat_enabled = False
         self._weapon_object_token: tuple[int, ...] | None = None
         self._practice_effects_active = False
+        self._force_crash_enabled = False
+        self._force_crash_object_token: tuple[int, ...] | None = None
         self._snapshot = RealtimeSnapshot(
             "disconnected",
             None,
@@ -455,7 +459,7 @@ class RealtimeMonitor:
         if connection is None:
             return self._snapshot
         if not connection.is_alive():
-            return self.disconnect("目标进程实例已退出，已停用实时会话")
+            return self.disconnect("目标进程实例已退出，已停用实时会话", recoverable=True)
         try:
             self._verify_fingerprints(connection)
         except RealtimeConnectionError as error:
@@ -471,12 +475,15 @@ class RealtimeMonitor:
         )
         return self._snapshot
 
-    def disconnect(self, message: str = "已断开实时会话") -> RealtimeSnapshot:
+    def disconnect(
+        self, message: str = "已断开实时会话", *, recoverable: bool = False
+    ) -> RealtimeSnapshot:
         if self._connection is not None:
+            recoverable = recoverable or not self._connection.is_alive()
             self._connection.close()
             self._connection = None
         self._clear_maintenance_targets()
-        self._snapshot = RealtimeSnapshot("disconnected", None, False, message, ())
+        self._snapshot = RealtimeSnapshot("disconnected", None, False, message, (), recoverable)
         return self._snapshot
 
     def read_player_state(self) -> PlayerState:
@@ -518,7 +525,7 @@ class RealtimeMonitor:
             )
             self._validate_player_state(current_player, player_layout)
             if current_base != base or current_token != token:
-                raise RealtimeEffectError("玩家对象在武器状态采样期间发生变化")
+                raise RealtimePlayerUnavailableError("玩家对象在武器状态采样期间发生变化")
             self._verify_fingerprints(connection)
             if before != after:
                 raise RealtimeFrameUnstableError("武器状态在采样期间变化，已丢弃整帧")
@@ -708,15 +715,18 @@ class RealtimeMonitor:
         self._weapon_object_token = token
         self._refresh_snapshot("同连段武器重复已启用")
 
+    def enable_force_crash_maintenance(self) -> None:
+        self._require_permission("force_crash_maintenance", "FC 满槽维持")
+        _, _, _, state, token = self._validated_player_snapshot()
+        if state.health <= 0:
+            raise RealtimePlayerUnavailableError("玩家已死亡，不启用 FC 满槽维持")
+        self._require_write_safe(state)
+        self._force_crash_enabled = True
+        self._force_crash_object_token = token
+        self._refresh_snapshot("FC 满槽维持已启用")
+
     def stop_effects(self) -> RealtimeSnapshot:
-        self._health_target = None
-        self._heat_target = None
-        self._heat_zero_transition_pending = False
-        self._health_object_token = None
-        self._heat_object_token = None
-        self._weapon_repeat_enabled = False
-        self._weapon_object_token = None
-        self._practice_effects_active = False
+        self._clear_maintenance_targets()
         return self.poll()
 
     def stop_health_maintenance(self) -> RealtimeSnapshot:
@@ -743,6 +753,7 @@ class RealtimeMonitor:
             self._health_target is None
             and self._heat_target is None
             and not self._weapon_repeat_enabled
+            and not self._force_crash_enabled
         ):
             return state
         try:
@@ -756,11 +767,14 @@ class RealtimeMonitor:
                     self._health_object_token,
                     self._heat_object_token,
                     self._weapon_object_token,
+                    self._force_crash_object_token,
                 )
                 if token is not None
             )
             if any(token != current_token for token in expected_tokens):
-                raise RealtimeEffectError("玩家对象在持续效果期间发生变化")
+                raise RealtimePlayerUnavailableError("玩家对象已重建，等待重新验证")
+            if player.health <= 0:
+                raise RealtimePlayerUnavailableError("玩家已死亡，等待下一场战斗")
             if player.write_inhibited:
                 return self._refresh_snapshot("Force Crash 发动中，持续写入已暂停")
             if self._health_target is not None:
@@ -793,6 +807,15 @@ class RealtimeMonitor:
                     self._heat_zero_transition_pending = False
             if self._weapon_repeat_enabled:
                 self._write_weapon_repeat(layout=layout, token=current_token)
+            if self._force_crash_enabled and player.force_crash != player.max_force_crash:
+                if layout.force_crash is None:
+                    raise RealtimeEffectError("当前 Profile 没有 FC 仪表布局")
+                self._write_player_field(
+                    "force_crash",
+                    layout.force_crash.maximum,
+                    layout=layout,
+                    token=current_token,
+                )
         except RealtimePlayerUnavailableError as error:
             self._clear_maintenance_targets()
             return self._refresh_snapshot(f"等待进入战斗：{error}")
@@ -800,7 +823,11 @@ class RealtimeMonitor:
             if self._connection is None:
                 return self._snapshot  # 写入后复核失败已停写，不能再刷新断开的句柄
             return self._refresh_snapshot("战斗数据正在更新，本帧已跳过")
+        except RealtimeWritePausedError:
+            return self._refresh_snapshot("Force Crash 发动中，持续写入已暂停")
         except RealtimeEffectError as error:
+            if self._connection is None:
+                return self._snapshot  # 保留采样层记录的进程退出原因和可重连标记。
             return self.disconnect(f"实时效果失败，已全部停写：{error}")
         self._snapshot = RealtimeSnapshot(
             "connected_read_only",
@@ -830,12 +857,12 @@ class RealtimeMonitor:
                 base, player, current_token = self._read_player_state(writer, layout)
                 self._validate_player_state(player, layout)
                 if current_token != token:
-                    raise RealtimeEffectError("玩家对象在武器重复写入前发生变化")
+                    raise RealtimePlayerUnavailableError("玩家对象在武器重复写入前发生变化")
                 if player.health <= 0:
                     raise RealtimeEffectError("玩家已死亡，不执行武器重复写入")
                 self._require_write_safe(player)
                 if self._practice_effects_active and player.scene_name != "练习战斗":
-                    raise RealtimeEffectError("练习场景在武器写入前变化")
+                    raise RealtimePlayerUnavailableError("练习场景在武器写入前变化")
                 before = self._read_weapon_state_at(writer, base, weapon_layout)
                 if not before.combo_active:
                     return
@@ -876,8 +903,7 @@ class RealtimeMonitor:
                     else before.history_count
                 )
                 if any(
-                    slot.used_in_combo
-                    for slot in after.slots[: weapon_layout.ordinary_slot_count]
+                    slot.used_in_combo for slot in after.slots[: weapon_layout.ordinary_slot_count]
                 ):
                     # 若游戏已追加一招，必须留下原生门禁；下轮再恢复，不覆盖新动作。
                     if after.history_count <= expected_count:
@@ -892,6 +918,9 @@ class RealtimeMonitor:
             finally:
                 writer.close()
         except RealtimeWritePausedError:
+            raise
+        except RealtimePlayerUnavailableError as error:
+            self._handle_write_scene_change(error, write_started)
             raise
         except RealtimeFrameUnstableError:
             if write_started:
@@ -940,12 +969,12 @@ class RealtimeMonitor:
                 current_base, current, current_token = self._read_player_state(writer, layout)
                 self._validate_player_state(current, layout)
                 if current_token != token:
-                    raise RealtimeEffectError("玩家对象在读写之间发生变化")
+                    raise RealtimePlayerUnavailableError("玩家对象在读写之间发生变化")
                 if current.health <= 0:
                     raise RealtimeEffectError("玩家已死亡，不执行实时写入")
                 self._require_write_safe(current)
                 if self._practice_effects_active and current.scene_name != "练习战斗":
-                    raise RealtimeEffectError("练习场景在数值写入前变化")
+                    raise RealtimePlayerUnavailableError("练习场景在数值写入前变化")
                 write_started = True
                 writer.write(
                     _field_address(writer, current_base, field),
@@ -955,10 +984,7 @@ class RealtimeMonitor:
                 written = _read_integer(writer, current_base, field)
                 accepted = (value,) if accepted_after_values is None else accepted_after_values
                 if written not in accepted:
-                    if (
-                        field_name != "heat"
-                        or not field.minimum <= written <= field.maximum
-                    ):
+                    if field_name != "heat" or not field.minimum <= written <= field.maximum:
                         raise RealtimeEffectError(f"{field_name} 写入未生效")
                 if field_name == "heat":
                     # 写入后游戏可能恰在跨生命段、自然冷却或发动武器。
@@ -984,6 +1010,9 @@ class RealtimeMonitor:
             finally:
                 writer.close()
         except RealtimeWritePausedError:
+            raise
+        except RealtimePlayerUnavailableError as error:
+            self._handle_write_scene_change(error, write_started)
             raise
         except RealtimeFrameUnstableError:
             if write_started:
@@ -1040,12 +1069,12 @@ class RealtimeMonitor:
                 current_base, current, current_token = self._read_player_state(writer, layout)
                 self._validate_player_state(current, layout)
                 if current_token != token:
-                    raise RealtimeEffectError("玩家对象在分段回血前发生变化")
+                    raise RealtimePlayerUnavailableError("玩家对象在分段回血前发生变化")
                 if current.health <= 0:
                     raise RealtimeEffectError("玩家已死亡，默认不执行复活写入")
                 self._require_write_safe(current)
                 if self._practice_effects_active and current.scene_name != "练习战斗":
-                    raise RealtimeEffectError("练习场景在分段回血前变化")
+                    raise RealtimePlayerUnavailableError("练习场景在分段回血前变化")
                 maximum_segments = _read_integer(writer, current_base, maximum_field)
                 maximum_health = (maximum_segments + 1) * segmented.segment_capacity
                 requested_health = maximum_health if target_health is None else target_health
@@ -1072,6 +1101,9 @@ class RealtimeMonitor:
                 writer.close()
         except RealtimeWritePausedError:
             raise
+        except RealtimePlayerUnavailableError as error:
+            self._handle_write_scene_change(error, write_started)
+            raise
         except RealtimeFrameUnstableError:
             if write_started:
                 self.disconnect("分段回血写入后状态变化，已全部停写")
@@ -1079,6 +1111,15 @@ class RealtimeMonitor:
         except (ProcessMemoryError, RealtimeConnectionError, RealtimeEffectError) as error:
             self.disconnect(f"health 写入失败，已全部停写：{error}")
             raise RealtimeEffectError(str(error)) from error
+
+    def _handle_write_scene_change(
+        self, error: RealtimePlayerUnavailableError, write_started: bool
+    ) -> None:
+        if write_started:
+            self.disconnect(f"写入后场景变化，已全部停写：{error}")
+            raise RealtimeEffectError(str(error)) from error
+        self._clear_maintenance_targets()
+        self._refresh_snapshot(f"写入前场景变化，等待下一场战斗：{error}")
 
     def _read_player_state(
         self,
@@ -1107,14 +1148,14 @@ class RealtimeMonitor:
             torn_segment_error = error
         # 先复核门禁和地址链：这些变化是身份/场景失效，不能伪装成普通战斗数值竞争。
         if guard_values != tuple(_read_integer(connection, base, field) for field in layout.guards):
-            raise RealtimeEffectError("玩家场景门禁在读取期间变化")
+            raise RealtimePlayerUnavailableError("玩家场景门禁在读取期间变化")
         if inhibitor_values != tuple(
             _read_integer(connection, base, field) for field in layout.write_inhibitors
         ):
-            raise RealtimeEffectError("实时写入抑制状态在读取期间变化")
+            raise RealtimeFrameUnstableError("实时写入抑制状态在读取期间变化")
         after = tuple(_resolve_address_path_token(connection, path) for path in paths)
         if before != after:
-            raise RealtimeEffectError("玩家地址链在采样期间发生变化，已丢弃整帧")
+            raise RealtimePlayerUnavailableError("玩家地址链在采样期间发生变化，已丢弃整帧")
         if layout.segmented_health is not None:
             # 多字段状态必须复核；正常攻击/冷却可能推进数值，但不意味着对象身份失效。
             try:
@@ -1133,7 +1174,7 @@ class RealtimeMonitor:
                     or state.battle_state != repeated.battle_state
                     or state.scene_guard_values != repeated.scene_guard_values
                 ):
-                    raise RealtimeEffectError("玩家身份或战斗场景在采样期间变化")
+                    raise RealtimePlayerUnavailableError("玩家身份或战斗场景在采样期间变化")
                 raise RealtimeFrameUnstableError("分段玩家状态在读取期间变化，已丢弃整帧")
         assert state is not None
         resolved_path_token = tuple(
@@ -1238,6 +1279,7 @@ class RealtimeMonitor:
             "heat_reduce",
             "heat_maintenance",
             "force_crash_refill",
+            "force_crash_maintenance",
             "weapon_repeat",
         ],
         display_name: str,
@@ -1258,6 +1300,8 @@ class RealtimeMonitor:
             effects.append("heat")
         if self._weapon_repeat_enabled:
             effects.append("weapon_repeat")
+        if self._force_crash_enabled:
+            effects.append("force_crash")
         return tuple(effects)
 
     def _clear_maintenance_targets(self) -> None:
@@ -1269,6 +1313,8 @@ class RealtimeMonitor:
         self._weapon_repeat_enabled = False
         self._weapon_object_token = None
         self._practice_effects_active = False
+        self._force_crash_enabled = False
+        self._force_crash_object_token = None
 
     def _refresh_snapshot(self, message: str) -> RealtimeSnapshot:
         connection = self._require_connection()

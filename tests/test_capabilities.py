@@ -6,6 +6,7 @@ from bfmod.capabilities import (
     FORCE_CRASH_UNLOCK,
     OFFLINE_WEAPON_EDIT,
     REALTIME_CONNECTION,
+    REALTIME_FORCE_CRASH_MAINTENANCE,
     REALTIME_FORCE_CRASH_REFILL,
     REALTIME_HEALTH_MAINTENANCE,
     REALTIME_HEALTH_RESTORE,
@@ -57,6 +58,9 @@ class CapabilityMatrixTests(unittest.TestCase):
         force_crash_meter = capability_by_id(matrix, REALTIME_FORCE_CRASH_REFILL)
         self.assertEqual(force_crash_meter.state, "verified_write")
         self.assertTrue(any("10000→9000→10000" in reason for reason in force_crash_meter.reasons))
+        fc_lock = capability_by_id(matrix, REALTIME_FORCE_CRASH_MAINTENANCE)
+        self.assertEqual(fc_lock.state, "verified_write")
+        self.assertTrue(any("连续发动后补满正常" in reason for reason in fc_lock.reasons))
 
     def test_unknown_installation_never_inherits_profile_or_write_capabilities(self) -> None:
         identity = _identity(known=False)

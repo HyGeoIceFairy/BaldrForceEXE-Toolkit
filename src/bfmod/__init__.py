@@ -2,7 +2,7 @@
 
 from .huffman import CONTAINER_VERSION, HuffmanContainer, decode_container, encode_container
 
-__version__ = "0.4.0"
+__version__ = "1.0.2"
 
 __all__ = [
     "CONTAINER_VERSION",

@@ -19,6 +19,7 @@ CapabilityId: TypeAlias = Literal[
     "realtime_heat_reduce",
     "realtime_heat_maintenance",
     "realtime_force_crash_refill",
+    "realtime_force_crash_maintenance",
     "realtime_weapon_state",
     "realtime_weapon_repeat",
 ]
@@ -39,6 +40,7 @@ REALTIME_HEALTH_MAINTENANCE: CapabilityId = "realtime_health_maintenance"
 REALTIME_HEAT_REDUCE: CapabilityId = "realtime_heat_reduce"
 REALTIME_HEAT_MAINTENANCE: CapabilityId = "realtime_heat_maintenance"
 REALTIME_FORCE_CRASH_REFILL: CapabilityId = "realtime_force_crash_refill"
+REALTIME_FORCE_CRASH_MAINTENANCE: CapabilityId = "realtime_force_crash_maintenance"
 REALTIME_WEAPON_STATE: CapabilityId = "realtime_weapon_state"
 REALTIME_WEAPON_REPEAT: CapabilityId = "realtime_weapon_repeat"
 
@@ -196,6 +198,14 @@ def build_capability_matrix(
             ("武器配置表、槽位和连段历史尚未完成直接取证",),
         ),
         _profile_player_capability(
+            REALTIME_FORCE_CRASH_MAINTENANCE,
+            "FC 满槽维持",
+            realtime_support,
+            profile_matches_installation,
+            profile,
+            ("FC 满槽维持未授权",),
+        ),
+        _profile_player_capability(
             REALTIME_WEAPON_REPEAT,
             "同连段武器可重复使用",
             realtime_support,
@@ -230,6 +240,10 @@ def _profile_player_capability(
     capability_reasons = (
         _profile_capability_reasons(profile, state) if state != "unavailable" else reasons
     )
+    if capability_id == REALTIME_FORCE_CRASH_MAINTENANCE and state == "experimental_write":
+        capability_reasons = (
+            "复用已验证的 0–10000 仪表和一次补充写入；持续锁满已覆盖故障门禁，待用户实机复测",
+        )
     return Capability(
         capability_id,
         display_name,

@@ -9,14 +9,14 @@ body:
       options:
         - label: 若问题来自公开发行包，我使用的是 GitHub Releases 中最新的受支持版本；若来自源码，我会说明提交号和工作区状态。
           required: true
-        - label: 若问题涉及写入或恢复，我已完全退出游戏及启动器并保留原始存档备份。
+        - label: 若问题涉及离线存档写入或恢复，我已完全退出游戏及启动器并保留原始存档备份。
           required: true
         - label: 我不会上传游戏文件、存档、研究映像或未经人工脱敏的诊断。
           required: true
   - type: input
     attributes:
       label: 工具版本
-      placeholder: 例如 0.4.0；源码运行时请附提交号和工作区状态
+      placeholder: 例如 1.0.2；源码运行时请附提交号和工作区状态
     validations:
       required: true
   - type: dropdown

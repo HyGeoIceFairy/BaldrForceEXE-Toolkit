@@ -327,7 +327,7 @@ class RealtimeMonitorTests(unittest.TestCase):
         with self.assertRaisesRegex(RealtimeEffectError, "地址链|对象"):
             monitor.restore_health_once()
 
-        self.assertEqual(monitor.snapshot.state, "disconnected")
+        self.assertEqual(monitor.snapshot.state, "connected_read_only")
         reader = adapter.open_process(instance)
         self.assertEqual(int.from_bytes(reader.read(image_base + 0x190, 4), "little"), 40)
         self.assertEqual(int.from_bytes(reader.read(image_base + 0x210, 4), "little"), 40)
@@ -510,7 +510,8 @@ class RealtimeMonitorTests(unittest.TestCase):
 
         snapshot = monitor.tick_effects()
 
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ())
         self.assertIn("对象", snapshot.message)
         reader = adapter.open_process(instance)
         self.assertEqual(int.from_bytes(reader.read(image_base + 0x210, 4), "little"), 40)

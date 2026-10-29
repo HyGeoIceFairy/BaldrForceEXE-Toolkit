@@ -28,6 +28,7 @@ class BuildContractTests(unittest.TestCase):
 
         for filename in (
             "README.md",
+            "RELEASE_NOTES.md",
             "SECURITY.md",
             "LICENSE",
             "THIRD_PARTY_NOTICES.txt",
@@ -51,6 +52,12 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn('Python-$PythonVersion.txt', script)
         self.assertIn('GNU LESSER GENERAL PUBLIC LICENSE', script)
         self.assertIn('GNU GENERAL PUBLIC LICENSE', script)
+
+    def test_build_gates_archive_on_frozen_application_startup(self) -> None:
+        script = (PROJECT_ROOT / "build.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn('"--smoke-test"', script)
+        self.assertIn('WaitForExit(30000)', script)
+        self.assertLess(script.index('"--smoke-test"'), script.index('Compress-Archive'))
 
     def test_version_info_fields_match_package_version(self) -> None:
         text = (PROJECT_ROOT / "version_info.txt").read_text(encoding="utf-8-sig")

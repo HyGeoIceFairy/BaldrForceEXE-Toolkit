@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -194,6 +195,7 @@ class RealtimePage(QWidget):
         health_target_changed: Callback,
         heat_target_changed: Callback,
         clear_events: Callback,
+        force_crash_maintenance_changed: Callback,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -211,6 +213,7 @@ class RealtimePage(QWidget):
             "自动识别普通战斗、练习模式和 Force Crash 发动状态。",
         )
         self._has_player_state = False
+        self._player_alive = False
         self._write_paused = False
         self._health_restore_available = False
         self._health_maintenance_available = False
@@ -218,6 +221,7 @@ class RealtimePage(QWidget):
         self._heat_maintenance_available = False
         self._force_crash_refill_available = False
         self._weapon_repeat_available = False
+        self._force_crash_maintenance_available = False
         status_group = QGroupBox("连接状态")
         status_layout = QVBoxLayout(status_group)
         self.status = QLabel("尚未连接")
@@ -233,12 +237,39 @@ class RealtimePage(QWidget):
         controls.addWidget(self.connect_button)
         controls.addWidget(self.stop_button)
         self.auto_reconnect = QCheckBox("断开后自动重连")
-        self.auto_reconnect.setToolTip(
-            "游戏重启或意外退出后自动恢复连接；手动停止后不会自动重连"
-        )
+        self.auto_reconnect.setToolTip("游戏重启或意外退出后自动恢复连接；手动停止后不会自动重连")
         controls.addWidget(self.auto_reconnect)
         controls.addStretch()
         status_layout.addLayout(controls)
+
+        live = QGroupBox("战斗助手 · 无需切出游戏")
+        live_layout = QVBoxLayout(live)
+        live_controls = QGridLayout()
+        self.show_hud = QCheckBox("置顶悬浮 HUD")
+        self.remember_effects = QCheckBox("跨场次自动恢复方案")
+        self.remember_effects.setChecked(True)
+        self.remember_effects.setToolTip("过场暂停写入，进入下一场后重新验证并恢复持续效果")
+        self.global_hotkeys = QCheckBox("全局快捷键")
+        live_controls.addWidget(self.show_hud, 0, 0)
+        live_controls.addWidget(self.global_hotkeys, 0, 1)
+        live_controls.addWidget(self.remember_effects, 1, 0, 1, 2)
+        live_layout.addLayout(live_controls)
+        plan_controls = QHBoxLayout()
+        self.load_plan_button = QPushButton("恢复上次方案")
+        self.pause_plan_button = QPushButton("暂停方案")
+        plan_controls.addWidget(self.load_plan_button)
+        plan_controls.addWidget(self.pause_plan_button)
+        plan_controls.addStretch()
+        live_layout.addLayout(plan_controls)
+        self.plan_status = QLabel("选择持续效果后自动记住；一次性操作不会重放。")
+        self.plan_status.setWordWrap(True)
+        live_layout.addWidget(self.plan_status)
+        self.hotkey_status = QLabel(
+            "Ctrl+Alt+F6 回血 · F7 降热 · F8 FC 充满 · F9 暂停/恢复 · F10 HUD · F11 锁FC · F12 全停"
+        )
+        self.hotkey_status.setObjectName("muted")
+        self.hotkey_status.setWordWrap(True)
+        live_layout.addWidget(self.hotkey_status)
 
         self.practice_preset_button = QPushButton("一键练习：锁血＋自然冷却＋武器重复")
         self.practice_preset_button.setToolTip(
@@ -246,7 +277,6 @@ class RealtimePage(QWidget):
             "不锁 Force Crash；切换场景或紧急全停时自动停用"
         )
         self.practice_preset_button.setEnabled(False)
-        status_layout.addWidget(self.practice_preset_button)
 
         self.last_stop_reason = QLabel("最近停用原因：无")
         self.last_stop_reason.setObjectName("muted")
@@ -254,11 +284,15 @@ class RealtimePage(QWidget):
         status_layout.addWidget(self.last_stop_reason)
 
         boundary = QGroupBox("可用功能")
+        boundary.setCheckable(True)
         boundary_layout = QVBoxLayout(boundary)
         self.capabilities = QLabel("载入游戏目录后将显示可用功能。")
         self.capabilities.setWordWrap(True)
         boundary_layout.addWidget(self.capabilities)
+        boundary.toggled.connect(self.capabilities.setVisible)
+        boundary.setChecked(False)
         layout.addWidget(status_group)
+        layout.addWidget(live)
         layout.addWidget(boundary)
 
         hud = QGroupBox("玩家战斗仪表")
@@ -301,9 +335,7 @@ class RealtimePage(QWidget):
         self.force_crash_bar.setValue(0)
         self.force_crash_bar.setTextVisible(False)
         self.force_crash_bar.setObjectName("forceCrash")
-        self.force_crash_bar.setToolTip(
-            "显示当前 Force Crash；可点击一次充满"
-        )
+        self.force_crash_bar.setToolTip("显示当前 Force Crash；可点击一次充满")
         force_crash_row.addWidget(self.force_crash_bar, 1)
         hud_layout.addLayout(force_crash_row)
         layout.addWidget(hud)
@@ -321,11 +353,20 @@ class RealtimePage(QWidget):
         self.weapon_history.setObjectName("muted")
         self.weapon_history.setWordWrap(True)
         weapons_layout.addWidget(self.weapon_history)
-        layout.addWidget(weapons)
+        weapons.setCheckable(True)
+        for label in (self.weapon_recent, self.weapon_configuration, self.weapon_history):
+            weapons.toggled.connect(label.setVisible)
+        weapons.setChecked(False)
 
         effects = QGroupBox("战斗修改")
         effects_layout = QVBoxLayout(effects)
-        one_shot = QHBoxLayout()
+        configuration_hint = QLabel(
+            "可在战前勾选方案，进入战斗后自动应用。一次性操作需在战斗中执行。"
+        )
+        configuration_hint.setWordWrap(True)
+        configuration_hint.setObjectName("muted")
+        effects_layout.addWidget(configuration_hint)
+        one_shot = QGridLayout()
         self.restore_health_button = QPushButton("一次回满 HP")
         self.restore_health_button.setToolTip("进入普通战斗或练习模式后可用")
         self.restore_health_button.clicked.connect(restore_health)
@@ -340,57 +381,63 @@ class RealtimePage(QWidget):
         self.heat_once_target.setRange(0, 1_000_000)
         self.heat_once_target.setPrefix("目标 ")
         self.refill_force_crash_button = QPushButton("Force Crash 充满")
-        self.refill_force_crash_button.setToolTip(
-            "将 Force Crash 补充到 10000；每次点击执行一次"
-        )
+        self.refill_force_crash_button.setToolTip("将 Force Crash 补充到 10000；每次点击执行一次")
         self.refill_force_crash_button.clicked.connect(refill_force_crash)
         self.refill_force_crash_button.setEnabled(False)
-        one_shot.addWidget(self.restore_health_button)
-        one_shot.addWidget(self.reduce_heat_button)
-        one_shot.addWidget(self.heat_once_target)
-        one_shot.addWidget(self.refill_force_crash_button)
-        one_shot.addStretch()
+        one_shot.addWidget(self.restore_health_button, 0, 0)
+        one_shot.addWidget(self.refill_force_crash_button, 0, 1)
+        one_shot.addWidget(self.reduce_heat_button, 1, 0)
+        one_shot.addWidget(self.heat_once_target, 1, 1)
         effects_layout.addLayout(one_shot)
-        continuous = QHBoxLayout()
+        continuous = QGridLayout()
         self.health_maintenance = QCheckBox("最低 HP 维持")
-        self.health_maintenance.setToolTip("HP 低于目标值时自动恢复；离开战斗后自动关闭")
+        self.health_maintenance.setToolTip("HP 低于目标值时自动恢复；可跨场次保留方案")
         self.health_maintenance.toggled.connect(health_maintenance_changed)
         self.health_maintenance.setEnabled(False)
         self.health_target = QSpinBox()
-        self.health_target.setRange(1, 1_000_000)
-        self.health_target.setValue(1)
+        self.health_target.setRange(0, 1_000_000)
+        self.health_target.setSpecialValueText("满血（随上限）")
+        self.health_target.setValue(0)
+        self.health_target.setKeyboardTracking(False)
         self.health_target.setEnabled(False)
         self.health_target.valueChanged.connect(health_target_changed)
         self.heat_maintenance = QCheckBox("热量阈值 / 武器恢复")
         self.heat_maintenance.setToolTip(
             "目标 0：快速冷却，并由游戏自然归零恢复本连段武器；"
-            "非零目标：热量高于阈值时自动降低。离开战斗后自动关闭"
+            "非零目标：热量高于阈值时自动降低。过场期间暂停写入"
         )
         self.heat_maintenance.toggled.connect(heat_maintenance_changed)
         self.heat_maintenance.setEnabled(False)
         self.heat_target = QSpinBox()
         self.heat_target.setRange(0, 1_000_000)
+        self.heat_target.setKeyboardTracking(False)
         self.heat_target.setEnabled(False)
         self.heat_target.valueChanged.connect(heat_target_changed)
         self.weapon_repeat = QCheckBox("同连段武器可重复使用")
         self.weapon_repeat.setToolTip(
-            "只恢复 12 个普通状态槽，不修改特殊槽、热量、伤害或命中；"
-            "原生连段伤害衰减仍然生效"
+            "只恢复 12 个普通状态槽，不修改特殊槽、热量、伤害或命中；原生连段伤害衰减仍然生效"
         )
         self.weapon_repeat.toggled.connect(weapon_repeat_changed)
         self.weapon_repeat.setEnabled(False)
-        continuous.addWidget(self.health_maintenance)
-        continuous.addWidget(self.health_target)
-        continuous.addSpacing(12)
-        continuous.addWidget(self.heat_maintenance)
-        continuous.addWidget(self.heat_target)
-        continuous.addSpacing(12)
-        continuous.addWidget(self.weapon_repeat)
-        continuous.addStretch()
+        continuous.addWidget(self.health_maintenance, 0, 0)
+        continuous.addWidget(self.health_target, 0, 1)
+        continuous.addWidget(self.heat_maintenance, 1, 0)
+        continuous.addWidget(self.heat_target, 1, 1)
+        continuous.addWidget(self.weapon_repeat, 2, 0, 1, 2)
+        self.force_crash_maintenance = QCheckBox("锁 FC 满槽")
+        self.force_crash_maintenance.setToolTip(
+            "维持 10000 仪表；FC 发动期间暂停，结束后补满。可在战前配置。"
+        )
+        self.force_crash_maintenance.setEnabled(False)
+        self.force_crash_maintenance.toggled.connect(force_crash_maintenance_changed)
+        continuous.addWidget(self.force_crash_maintenance, 3, 0, 1, 2)
+        continuous.setColumnStretch(2, 1)
         effects_layout.addLayout(continuous)
         self.effect_status = QLabel("没有启用持续效果。")
         self.effect_status.setObjectName("muted")
         effects_layout.addWidget(self.effect_status)
+        self.effect_status.setWordWrap(True)
+        effects_layout.addWidget(self.practice_preset_button)
         heat_recovery_note = QLabel(
             "提示：“热量阈值 / 武器恢复”仍通过自然归零结束连段；"
             "“同连段武器可重复使用”独立恢复已验证的 12 个普通槽，并维护极长连段历史安全边界。"
@@ -399,6 +446,25 @@ class RealtimePage(QWidget):
         heat_recovery_note.setWordWrap(True)
         effects_layout.addWidget(heat_recovery_note)
         layout.addWidget(effects)
+        layout.addWidget(weapons)
+
+        # 两列工作台：连接与仪表在左，方案与操作在右；窄窗口不再挤压操作行。
+        for group in (status_group, live, boundary, hud, effects, weapons):
+            layout.removeWidget(group)
+        dashboard = QHBoxLayout()
+        left = QVBoxLayout()
+        left.addWidget(status_group)
+        left.addWidget(hud)
+        left.addWidget(boundary)
+        left.addStretch()
+        right = QVBoxLayout()
+        right.addWidget(live)
+        right.addWidget(effects)
+        right.addStretch()
+        dashboard.addLayout(left, 1)
+        dashboard.addLayout(right, 1)
+        layout.addLayout(dashboard)
+        layout.addWidget(weapons)
 
         events = QGroupBox("运行记录")
         events_layout = QVBoxLayout(events)
@@ -431,10 +497,13 @@ class RealtimePage(QWidget):
         write_paused: bool = False,
         scene_name: str | None = None,
     ) -> None:
-        first_valid_state = not self._has_player_state
         self._has_player_state = True
+        self._player_alive = health > 0
         self._write_paused = write_paused
-        if write_paused:
+        if health <= 0:
+            self.hud_status.setText("玩家已死亡 · 等待下一场战斗")
+            self.hud_status.setObjectName("warning")
+        elif write_paused:
             self.hud_status.setText("Force Crash 发动中 · 修改暂时暂停")
             self.hud_status.setObjectName("warning")
         else:
@@ -453,17 +522,21 @@ class RealtimePage(QWidget):
         else:
             self.force_crash_value.setText("— / —")
             self.force_crash_bar.setValue(0)
-        self.health_target.setMaximum(max_health)
-        if first_valid_state:
-            self.health_target.setValue(max_health)
-        else:
-            self.health_target.setValue(max(1, min(self.health_target.value(), max_health)))
+        self.health_target.setToolTip(f"0 表示满血；当前最大 HP {max_health}，自定义目标按上限应用")
         self.heat_once_target.setMaximum(max_heat)
-        self.heat_target.setMaximum(max_heat)
-        if first_valid_state:
-            self.heat_once_target.setValue(0)
-            self.heat_target.setValue(0)
+        self.heat_target.setToolTip(f"当前热量上限 {max_heat}；战前目标会按实际上限应用")
         self._sync_effect_controls()
+
+    def set_plan_controls(self, effects: tuple[str, ...]) -> None:
+        for effect, checkbox in (
+            ("health", self.health_maintenance),
+            ("heat", self.heat_maintenance),
+            ("weapon_repeat", self.weapon_repeat),
+            ("force_crash", self.force_crash_maintenance),
+        ):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(effect in effects)
+            checkbox.blockSignals(False)
 
     def show_weapon_state(
         self,
@@ -480,8 +553,7 @@ class RealtimePage(QWidget):
                 f"最近发动：槽 {recent_slot} · 实际武器 ID {recent_weapon_id}"
             )
         ordinary = "  ".join(
-            f"{slot}:{weapon_id}{'●' if used else ''}"
-            for slot, weapon_id, used in slots[:12]
+            f"{slot}:{weapon_id}{'●' if used else ''}" for slot, weapon_id, used in slots[:12]
         )
         special = slots[12] if len(slots) > 12 else None
         special_text = (
@@ -521,10 +593,17 @@ class RealtimePage(QWidget):
             names.append("热量阈值 / 武器恢复")
         if "weapon_repeat" in effects:
             names.append("同连段武器可重复使用")
+        if "force_crash" in effects:
+            names.append("FC 满槽维持")
         self.effect_status.setText(f"已启用：{'、'.join(names)}" if names else "没有启用持续效果。")
 
     def reset_effect_controls(self) -> None:
-        for checkbox in (self.health_maintenance, self.heat_maintenance, self.weapon_repeat):
+        for checkbox in (
+            self.health_maintenance,
+            self.heat_maintenance,
+            self.weapon_repeat,
+            self.force_crash_maintenance,
+        ):
             checkbox.blockSignals(True)
             checkbox.setChecked(False)
             checkbox.blockSignals(False)
@@ -537,6 +616,7 @@ class RealtimePage(QWidget):
             ("health", self.health_maintenance),
             ("heat", self.heat_maintenance),
             ("weapon_repeat", self.weapon_repeat),
+            ("force_crash", self.force_crash_maintenance),
         ):
             if effect not in effects and checkbox.isChecked():
                 checkbox.blockSignals(True)
@@ -553,6 +633,7 @@ class RealtimePage(QWidget):
         heat_maintenance: bool,
         force_crash_refill: bool = False,
         weapon_repeat: bool = False,
+        force_crash_maintenance: bool = False,
     ) -> None:
         self._health_restore_available = health_restore
         self._health_maintenance_available = health_maintenance
@@ -560,6 +641,11 @@ class RealtimePage(QWidget):
         self._heat_maintenance_available = heat_maintenance
         self._force_crash_refill_available = force_crash_refill
         self._weapon_repeat_available = weapon_repeat
+        self._force_crash_maintenance_available = force_crash_maintenance
+        if not force_crash_maintenance:
+            self.force_crash_maintenance.blockSignals(True)
+            self.force_crash_maintenance.setChecked(False)
+            self.force_crash_maintenance.blockSignals(False)
         if not health_maintenance and self.health_maintenance.isChecked():
             self.health_maintenance.blockSignals(True)
             self.health_maintenance.setChecked(False)
@@ -578,24 +664,21 @@ class RealtimePage(QWidget):
             self._sync_effect_controls()
 
     def _sync_effect_controls(self) -> None:
-        """只有能力授权与当前玩家快照同时有效时才开放写入控件。"""
+        """持续选项只编辑方案；一次性写入仍须当前玩家快照有效。"""
 
-        usable = self._has_player_state and not self._write_paused
+        usable = self._has_player_state and self._player_alive and not self._write_paused
         self.restore_health_button.setEnabled(usable and self._health_restore_available)
         self.reduce_heat_button.setEnabled(usable and self._heat_reduce_available)
-        self.heat_once_target.setEnabled(usable and self._heat_reduce_available)
-        self.refill_force_crash_button.setEnabled(
-            usable and self._force_crash_refill_available
-        )
-        self.health_maintenance.setEnabled(usable and self._health_maintenance_available)
-        self.health_target.setEnabled(usable and self._health_maintenance_available)
-        self.heat_maintenance.setEnabled(usable and self._heat_maintenance_available)
-        self.heat_target.setEnabled(usable and self._heat_maintenance_available)
-        self.weapon_repeat.setEnabled(usable and self._weapon_repeat_available)
+        self.heat_once_target.setEnabled(self._heat_reduce_available)
+        self.refill_force_crash_button.setEnabled(usable and self._force_crash_refill_available)
+        self.health_maintenance.setEnabled(self._health_maintenance_available)
+        self.health_target.setEnabled(self._health_maintenance_available)
+        self.heat_maintenance.setEnabled(self._heat_maintenance_available)
+        self.heat_target.setEnabled(self._heat_maintenance_available)
+        self.weapon_repeat.setEnabled(self._weapon_repeat_available)
+        self.force_crash_maintenance.setEnabled(self._force_crash_maintenance_available)
         self.practice_preset_button.setEnabled(
-            usable
-            and self.hud_status.text().startswith("练习战斗")
-            and self._health_maintenance_available
+            self._health_maintenance_available
             and self._heat_maintenance_available
             and self._weapon_repeat_available
         )

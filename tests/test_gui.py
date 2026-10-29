@@ -62,7 +62,7 @@ class GuiStructureTests(unittest.TestCase):
             self.assertFalse(window.apply_button.isEnabled())
             self.assertFalse(window.force_crash_apply_button.isEnabled())
             self.assertEqual(window.realtime_status.text(), "尚未连接")
-            self.assertFalse(window.realtime_auto_reconnect.isChecked())
+            self.assertTrue(window.realtime_auto_reconnect.isChecked())
             self.assertTrue(window.realtime_event_log.isReadOnly())
             self.assertIn("尚无实时事件", window.realtime_event_log.toPlainText())
             self.assertFalse(window.realtime_restore_health_button.isEnabled())
@@ -365,6 +365,7 @@ class GuiStructureTests(unittest.TestCase):
         monitor = Mock()
         instance = ProcessInstance(123, 456, Path("C:/game/BaldrForce.exe"), "x86", 0x400000)
         monitor.snapshot = RealtimeSnapshot("connected_read_only", instance, True, "只读")
+
         def enable_combo() -> PlayerState:
             monitor.snapshot = RealtimeSnapshot(
                 "connected_read_only", instance, True, "已启用", ("health", "heat", "weapon_repeat")
@@ -375,11 +376,12 @@ class GuiStructureTests(unittest.TestCase):
         window.realtime_monitor = monitor
         try:
             window._enable_practice_preset()
-            monitor.enable_practice_effects.assert_called_once_with()
+            monitor.enable_practice_effects.assert_not_called()
+            self.assertTrue(window.battle_plan.practice_only)
             self.assertTrue(window.realtime_page.health_maintenance.isChecked())
             self.assertTrue(window.realtime_page.heat_maintenance.isChecked())
             self.assertTrue(window.realtime_page.weapon_repeat.isChecked())
-            self.assertEqual(window.realtime_poll_timer.interval(), 20)
+            self.assertEqual(window.realtime_poll_timer.interval(), 100)
         finally:
             window.realtime_monitor = None
             window.close()
@@ -396,13 +398,21 @@ class GuiStructureTests(unittest.TestCase):
                 "练习组合仅限练习战斗"
             )
             window._enable_practice_preset()
-            monitor.enable_practice_effects.assert_called_once_with()
-            self.assertIn("仅限", window.realtime_status.text())
+            monitor.enable_practice_effects.assert_not_called()
+            self.assertFalse(
+                window.battle_plan.resume(
+                    monitor, PlayerState(50, 100, 30, 130, 7, 7, 0, scene_name="普通战斗")
+                )
+            )
             monitor.enable_practice_effects.side_effect = RealtimeEffectError("门禁变化")
-            window._enable_practice_preset()
-            self.assertEqual(monitor.enable_practice_effects.call_count, 2)
-            self.assertFalse(window.realtime_page.health_maintenance.isChecked())
-            self.assertFalse(window.realtime_page.weapon_repeat.isChecked())
+            with self.assertRaises(RealtimeEffectError):
+                window.battle_plan.resume(
+                    monitor, PlayerState(50, 100, 30, 130, 7, 7, 3, scene_name="练习战斗")
+                )
+            monitor.stop_effects.assert_called()
+            self.assertEqual(monitor.enable_practice_effects.call_count, 1)
+            self.assertTrue(window.realtime_page.health_maintenance.isChecked())
+            self.assertTrue(window.realtime_page.weapon_repeat.isChecked())
         finally:
             window.realtime_monitor = None
             window.close()
@@ -605,9 +615,12 @@ class GuiStructureTests(unittest.TestCase):
 
             window.realtime_page.weapon_repeat.setChecked(True)
 
-            monitor.enable_weapon_repeat.assert_called_once_with()
+            monitor.enable_weapon_repeat.assert_not_called()
+            self.assertTrue(window.battle_plan.weapon_repeat)
+            window.battle_plan.resume(monitor, PlayerState(72, 100, 35, 200, 7, 7, 1))
+            window._sync_realtime_poll_interval(monitor.snapshot)
             self.assertEqual(window.realtime_poll_timer.interval(), 20)
-            self.assertIn("同连段武器可重复使用", window.realtime_effect_status.text())
+            self.assertTrue(window.realtime_page.weapon_repeat.isChecked())
         finally:
             window.realtime_monitor = None
             window.close()
@@ -727,8 +740,8 @@ class GuiStructureTests(unittest.TestCase):
             self.assertIn("Force Crash 一次补充", window.realtime_capabilities.text())
             self.assertFalse(window.realtime_restore_health_button.isEnabled())
             self.assertFalse(window.realtime_reduce_heat_button.isEnabled())
-            self.assertFalse(window.realtime_page.health_maintenance.isEnabled())
-            self.assertFalse(window.realtime_page.heat_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.health_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.heat_maintenance.isEnabled())
             self.assertNotIn("验证", window.realtime_capabilities.text())
         finally:
             window.realtime_monitor = None
@@ -748,8 +761,8 @@ class GuiStructureTests(unittest.TestCase):
             )
             self.assertFalse(window.realtime_restore_health_button.isEnabled())
             self.assertFalse(window.realtime_reduce_heat_button.isEnabled())
-            self.assertFalse(window.realtime_page.health_maintenance.isEnabled())
-            self.assertFalse(window.realtime_page.heat_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.health_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.heat_maintenance.isEnabled())
 
             window.realtime_page.show_player_state(72, 100, 35, 200, 1, 7500, 10000)
             self.assertTrue(window.realtime_restore_health_button.isEnabled())
@@ -761,7 +774,7 @@ class GuiStructureTests(unittest.TestCase):
                 "一次充满",
                 window.realtime_force_crash_bar.toolTip(),
             )
-            self.assertEqual(window.realtime_page.health_target.value(), 100)
+            self.assertEqual(window.realtime_page.health_target.value(), 0)
             self.assertEqual(window.realtime_page.heat_once_target.value(), 0)
             self.assertEqual(window.realtime_page.heat_target.value(), 0)
 
@@ -780,8 +793,8 @@ class GuiStructureTests(unittest.TestCase):
             self.assertFalse(window.realtime_restore_health_button.isEnabled())
             self.assertFalse(window.realtime_reduce_heat_button.isEnabled())
             self.assertFalse(window.realtime_page.refill_force_crash_button.isEnabled())
-            self.assertFalse(window.realtime_page.health_maintenance.isEnabled())
-            self.assertFalse(window.realtime_page.heat_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.health_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.heat_maintenance.isEnabled())
 
             window.realtime_page.show_player_state(72, 100, 35, 200, 1, 7500, 10000)
             self.assertTrue(window.realtime_restore_health_button.isEnabled())
@@ -799,12 +812,12 @@ class GuiStructureTests(unittest.TestCase):
             self.assertEqual(window.realtime_force_crash_value.text(), "— / —")
             self.assertEqual(window.realtime_force_crash_bar.value(), 0)
             self.assertFalse(window.realtime_restore_health_button.isEnabled())
-            self.assertFalse(window.realtime_page.health_maintenance.isEnabled())
+            self.assertTrue(window.realtime_page.health_maintenance.isEnabled())
             self.assertFalse(window.realtime_page.refill_force_crash_button.isEnabled())
             window.realtime_page.show_player_state(120, 150, 10, 200, 1)
-            self.assertEqual(window.realtime_page.health_target.value(), 150)
-            self.assertEqual(window.realtime_page.heat_once_target.value(), 0)
-            self.assertEqual(window.realtime_page.heat_target.value(), 0)
+            self.assertEqual(window.realtime_page.health_target.value(), 80)
+            self.assertEqual(window.realtime_page.heat_once_target.value(), 40)
+            self.assertEqual(window.realtime_page.heat_target.value(), 30)
         finally:
             window.close()
 
@@ -843,9 +856,12 @@ class GuiStructureTests(unittest.TestCase):
             window.realtime_page.health_target.setValue(80)
             window.realtime_page.heat_target.setValue(20)
 
-            monitor.enable_health_maintenance.assert_called_once_with(80)
-            monitor.enable_heat_maintenance.assert_called_once_with(20)
-            self.assertIn("目标已更新", window.realtime_event_log.toPlainText())
+            monitor.enable_health_maintenance.assert_not_called()
+            self.assertEqual(window.battle_plan.health, 80)
+            monitor.enable_heat_maintenance.assert_not_called()
+            self.assertEqual(window.battle_plan.heat, 20)
+            monitor.stop_effects.assert_called()
+            self.assertIn("方案已更新", window.realtime_event_log.toPlainText())
         finally:
             window.realtime_monitor = None
             window.close()
@@ -876,9 +892,9 @@ class GuiStructureTests(unittest.TestCase):
             (),
         )
         monitor.snapshot = active_snapshot
-        monitor.stop_health_maintenance.side_effect = lambda: setattr(
-            monitor, "snapshot", idle_snapshot
-        ) or idle_snapshot
+        monitor.stop_health_maintenance.side_effect = lambda: (
+            setattr(monitor, "snapshot", idle_snapshot) or idle_snapshot
+        )
         window.realtime_monitor = monitor
         window._sync_realtime_poll_interval(active_snapshot)
         try:
@@ -896,10 +912,15 @@ class GuiStructureTests(unittest.TestCase):
 
             window.realtime_page.health_target.setValue(80)
 
-            monitor.stop_health_maintenance.assert_called_once_with()
+            monitor.stop_effects.assert_called_once_with()
+            monitor.snapshot = idle_snapshot
+            monitor.tick_effects.return_value = idle_snapshot
+            monitor.read_player_state.side_effect = RealtimeEffectError("场景正在切换")
+            with patch.object(window, "_realtime_hud_available", return_value=True):
+                window._poll_realtime_monitor()
             self.assertFalse(window.realtime_page.health_maintenance.isChecked())
             self.assertIn("场景正在切换", window.realtime_status.text())
-            self.assertEqual(window.realtime_poll_timer.interval(), 1000)
+            self.assertFalse(window.battle_plan.effects)
         finally:
             window.realtime_monitor = None
             window.close()
@@ -1119,7 +1140,7 @@ class GuiStructureTests(unittest.TestCase):
             slot_path = root / "Save002.dat"
             slot_path.write_bytes(b"current")
             slot = Mock(path=slot_path)
-            workspace = Mock(slots=(slot,))
+            workspace = Mock(slots=(slot,), game_root=root)
             backup = BackupInfo(root / "backup", "now", "Save", 1, "", "test")
             backup_file = BackupFileInfo(slot_path.name, 6, "B" * 64)
             window = MainWindow()

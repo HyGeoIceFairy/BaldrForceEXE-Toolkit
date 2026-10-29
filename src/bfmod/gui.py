@@ -63,7 +63,10 @@ from .application import (
     restore_slot,
 )
 from .backups import BackupInfo, list_backup_files, list_backups, verify_backup
+from .battle_hud import BattleHud
+from .battle_plan import BattlePlan
 from .capabilities import (
+    REALTIME_FORCE_CRASH_MAINTENANCE,
     REALTIME_FORCE_CRASH_REFILL,
     REALTIME_HEALTH_MAINTENANCE,
     REALTIME_HEALTH_RESTORE,
@@ -78,6 +81,7 @@ from .capabilities import (
 from .editing import EditorSession, WeaponChange
 from .force_crash import ForceCrashChange, ForceCrashSession
 from .force_crash_translations import FORCE_CRASH_NAMES_ZH
+from .global_hotkeys import GlobalHotkeys
 from .gui_pages import ForceCrashPage, RealtimePage
 from .installation import DEFAULT_GAME_ROOT_CANDIDATES, resolve_game_root
 from .process_memory import WindowsProcessMemoryAdapter
@@ -412,6 +416,9 @@ class MainWindow(QMainWindow):
         self.session: EditorSession | None = None
         self.force_crash_session: ForceCrashSession | None = None
         self.realtime_monitor: RealtimeMonitor | None = None
+        self.battle_plan = BattlePlan()
+        self._battle_plan_paused = False
+        self._battle_plan_applied = False
         self._realtime_connection_requested = False
         self._realtime_events: list[str] = []
         self.realtime_poll_timer = QTimer(self)
@@ -427,9 +434,227 @@ class MainWindow(QMainWindow):
         self.resize(1320, 820)
         self.setMinimumSize(1050, 680)
         self._build_ui()
+        self._build_battle_assistant()
         self._build_shortcuts()
         self._restore_geometry()
         self._load_initial_workspace()
+
+    def _build_battle_assistant(self) -> None:
+        page = self.realtime_page
+        actions = {
+            "heal": lambda: self._battle_action(page.restore_health_button),
+            "cool": lambda: self._battle_action(page.reduce_heat_button),
+            "fc": lambda: self._battle_action(page.refill_force_crash_button),
+            "pause": self._toggle_battle_pause,
+            "hud": lambda: page.show_hud.setChecked(not page.show_hud.isChecked()),
+            "stop": self._stop_realtime_monitor,
+            "fc_lock": lambda: self._hud_effect_toggled(
+                "force_crash", not page.force_crash_maintenance.isChecked()
+            ),
+            "connect": lambda: self._battle_action(page.connect_button),
+            "load": lambda: self._battle_action(page.load_plan_button),
+            "practice": lambda: self._battle_action(page.practice_preset_button),
+        }
+        self.battle_hud = BattleHud(actions)
+        self.battle_hud.effect_toggled.connect(self._hud_effect_toggled)
+        self.battle_hud.target_changed.connect(self._hud_target_changed)
+        self.battle_hud.quick_preset.connect(self._hud_quick_preset)
+        self.battle_hud.opacity.setValue(
+            int(str(self.settings.value("battle/hud_opacity", 92, type=int)))
+        )
+        self.battle_hud.compact.setChecked(
+            bool(self.settings.value("battle/hud_compact", False, type=bool))
+        )
+        self.hotkeys = GlobalHotkeys(actions)
+        page.show_hud.toggled.connect(self._toggle_battle_hud)
+        self.battle_hud.hidden.connect(lambda: page.show_hud.setChecked(False))
+        page.global_hotkeys.toggled.connect(self._toggle_global_hotkeys)
+        page.remember_effects.toggled.connect(self._remember_effects_changed)
+        page.load_plan_button.clicked.connect(self._load_battle_plan)
+        page.pause_plan_button.clicked.connect(self._toggle_battle_pause)
+        self.hud_timer = QTimer(self)
+        self.hud_timer.setInterval(200)
+        self.hud_timer.timeout.connect(self._sync_battle_assistant)
+        self.hud_timer.start()
+        page.remember_effects.setChecked(
+            bool(self.settings.value("battle/remember", True, type=bool))
+        )
+        self.realtime_auto_reconnect.blockSignals(True)
+        self.realtime_auto_reconnect.setChecked(
+            bool(self.settings.value("battle/reconnect", True, type=bool))
+        )
+        self.realtime_auto_reconnect.blockSignals(False)
+        # 测试和截图所用的 offscreen 平台不占用系统快捷键。
+        if QApplication.platformName() != "offscreen":
+            page.global_hotkeys.setChecked(
+                bool(self.settings.value("battle/hotkeys", True, type=bool))
+            )
+        self._sync_battle_assistant()
+
+    @staticmethod
+    def _battle_action(button: QPushButton) -> None:
+        if button.isEnabled():
+            button.click()
+
+    def _hud_effect_toggled(self, name: str, enabled: bool) -> None:
+        checkbox = {
+            "health": self.realtime_page.health_maintenance,
+            "heat": self.realtime_page.heat_maintenance,
+            "weapon_repeat": self.realtime_page.weapon_repeat,
+            "force_crash": self.realtime_page.force_crash_maintenance,
+        }[name]
+        if checkbox.isEnabled():
+            checkbox.setChecked(enabled)
+        self._sync_battle_assistant()
+
+    def _hud_target_changed(self, name: str, value: int) -> None:
+        target = {
+            "health": self.realtime_page.health_target,
+            "heat": self.realtime_page.heat_target,
+            "heat_once": self.realtime_page.heat_once_target,
+        }[name]
+        if target.isEnabled():
+            target.setValue(value)
+        self._sync_battle_assistant()
+
+    def _hud_quick_preset(self, name: str) -> None:
+        if name == "force_crash":
+            self._hud_effect_toggled(name, True)
+            return
+        page = self.realtime_page
+        target = page.health_target if name == "health" else page.heat_target
+        if not target.isEnabled():
+            return
+        self._hud_target_changed(name, 0)
+        self._hud_effect_toggled(name, True)
+
+    def _toggle_battle_hud(self, visible: bool) -> None:
+        if visible:
+            geometry = self.settings.value("battle/hud_geometry")
+            if geometry is not None:
+                self.battle_hud.restoreGeometry(geometry)
+            screen = self.battle_hud.screen()
+            if screen is not None and not screen.availableGeometry().intersects(
+                self.battle_hud.frameGeometry()
+            ):
+                self.battle_hud.move(screen.availableGeometry().topLeft())
+            self._sync_battle_assistant()
+            self.battle_hud.show()
+        else:
+            self.settings.setValue("battle/hud_geometry", self.battle_hud.saveGeometry())
+            self.battle_hud.hide()
+
+    def _toggle_global_hotkeys(self, enabled: bool) -> None:
+        self.settings.setValue("battle/hotkeys", enabled)
+        if enabled:
+            failures = self.hotkeys.start()
+            message = "；".join(failures) if failures else "全局快捷键已启用（Ctrl+Alt+F6–F12）"
+        else:
+            self.hotkeys.stop()
+            message = "全局快捷键已关闭"
+        self._append_realtime_event(message)
+        self.realtime_page.hotkey_status.setToolTip(message)
+        self.realtime_page.hotkey_status.setText(
+            "Ctrl+Alt+F6 回血 · F7 降热 · F8 FC · F9 暂停/恢复 · F10 HUD · F11 锁FC · F12 全停"
+            + (f"\n{message}" if enabled else "")
+        )
+
+    def _remember_effects_changed(self, enabled: bool) -> None:
+        self.settings.setValue("battle/remember", enabled)
+        self._sync_battle_assistant()
+
+    def _capture_battle_plan(self, *, practice_only: bool = False) -> None:
+        page = self.realtime_page
+        self.battle_plan = BattlePlan(
+            health=max(1, page.health_target.value())
+            if page.health_maintenance.isChecked()
+            else None,
+            full_health=page.health_target.value() == 0,
+            heat=page.heat_target.value() if page.heat_maintenance.isChecked() else None,
+            weapon_repeat=page.weapon_repeat.isChecked(),
+            practice_only=practice_only,
+            force_crash=page.force_crash_maintenance.isChecked(),
+        )
+        self.settings.setValue("battle/plan", self.battle_plan.to_json())
+        self._sync_battle_assistant()
+
+    def _load_battle_plan(self) -> None:
+        try:
+            plan = BattlePlan.from_json(str(self.settings.value("battle/plan", "")))
+        except ValueError:
+            self._show_realtime_action_error("恢复方案", "尚无有效方案，请先选择持续效果")
+            return
+        if self.realtime_monitor is not None:
+            self.realtime_monitor.stop_effects()
+        self.realtime_page.remember_effects.blockSignals(True)
+        self.realtime_page.remember_effects.setChecked(True)
+        self.realtime_page.remember_effects.blockSignals(False)
+        self.settings.setValue("battle/remember", True)
+        self.battle_plan = plan
+        self._battle_plan_applied = False
+        self._battle_plan_paused = False
+        self._append_realtime_event("已载入上次方案，等待已验证战斗后恢复")
+        if self.realtime_monitor is None:
+            self._connect_realtime_monitor()
+        self._sync_battle_assistant()
+
+    def _toggle_battle_pause(self) -> None:
+        if not self.battle_plan.effects:
+            self._capture_battle_plan()
+        if not self.battle_plan.effects:
+            return
+        self._battle_plan_paused = not self._battle_plan_paused
+        if self.realtime_monitor is not None:
+            self.realtime_monitor.stop_effects()
+        self._append_realtime_event("方案已暂停" if self._battle_plan_paused else "方案等待恢复")
+        if self.realtime_monitor is not None:
+            self._sync_realtime_poll_interval(self.realtime_monitor.snapshot)
+        self._sync_battle_assistant()
+
+    def _sync_battle_assistant(self) -> None:
+        page = self.realtime_page
+        effects = self.battle_plan.effects
+        if effects:
+            names = {
+                "health": "满血维持" if self.battle_plan.full_health else "最低 HP",
+                "heat": "自然冷却" if self.battle_plan.heat == 0 else "热量阈值",
+                "weapon_repeat": "武器重复",
+                "force_crash": "FC 满槽",
+            }
+            active = self.realtime_monitor.snapshot.active_effects if self.realtime_monitor else ()
+            if self._battle_plan_paused:
+                status = "已暂停"
+            elif (
+                set(effects).issubset(active) and page._has_player_state and not page._write_paused
+            ):
+                status = "生效中"
+            else:
+                status = "等待战斗验证后恢复"
+            if self.battle_plan.practice_only:
+                status += " · 仅练习"
+            text = f"{status}：{' / '.join(names[effect] for effect in effects)}"
+            page.set_plan_controls(effects)
+            for target, value in (
+                (
+                    page.health_target,
+                    0 if self.battle_plan.full_health else self.battle_plan.health,
+                ),
+                (page.heat_target, self.battle_plan.heat),
+            ):
+                if value is not None:
+                    target.blockSignals(True)
+                    target.setValue(value)
+                    target.blockSignals(False)
+        else:
+            text = page.effect_status.text()
+        page.plan_status.setText(text)
+        page.pause_plan_button.setText("恢复方案" if self._battle_plan_paused else "暂停方案")
+        page.pause_plan_button.setEnabled(bool(effects))
+        self.battle_hud.action_buttons["pause"].setText(
+            "恢复方案 · F9" if self._battle_plan_paused else "暂停方案 · F9"
+        )
+        self.battle_hud.sync(page, text)
+        self.battle_hud.set_game_directory(self.workspace.game_root if self.workspace else None)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -727,6 +952,7 @@ class MainWindow(QMainWindow):
             health_target_changed=self._health_target_changed,
             heat_target_changed=self._heat_target_changed,
             clear_events=self._clear_realtime_events,
+            force_crash_maintenance_changed=self._force_crash_maintenance_changed,
         )
         self.realtime_status = page.status
         self.realtime_connect_button = page.connect_button
@@ -750,46 +976,27 @@ class MainWindow(QMainWindow):
         return page
 
     def _enable_practice_preset(self) -> None:
-        """仅为当前玩家对象启用经过逐项门禁的组合；任何失败都不留下半套效果。"""
-
-        monitor = self.realtime_monitor
-        if monitor is None:
-            return
-        try:
-            state = monitor.enable_practice_effects()
-        except RealtimeEffectError as error:
-            self.realtime_page.sync_effect_controls(monitor.snapshot.active_effects)
-            self.realtime_page.show_active_effects(monitor.snapshot.active_effects)
-            self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("一键练习", str(error))
-            self._synchronize_realtime_disconnect(monitor)
-            return
-        self.realtime_page.health_maintenance.blockSignals(True)
-        self.realtime_page.heat_maintenance.blockSignals(True)
-        self.realtime_page.weapon_repeat.blockSignals(True)
-        self.realtime_page.health_target.blockSignals(True)
-        self.realtime_page.heat_target.blockSignals(True)
-        try:
-            self.realtime_page.health_target.setValue(state.max_health)
-            self.realtime_page.heat_target.setValue(0)
-        finally:
-            self.realtime_page.health_target.blockSignals(False)
-            self.realtime_page.heat_target.blockSignals(False)
-        self.realtime_page.health_maintenance.setChecked(True)
-        self.realtime_page.heat_maintenance.setChecked(True)
-        self.realtime_page.weapon_repeat.setChecked(True)
-        self.realtime_page.health_maintenance.blockSignals(False)
-        self.realtime_page.heat_maintenance.blockSignals(False)
-        self.realtime_page.weapon_repeat.blockSignals(False)
-        self.realtime_page.show_active_effects(monitor.snapshot.active_effects)
-        self._sync_realtime_poll_interval(monitor.snapshot)
-        self._append_realtime_event("练习组合已启用：锁血、自然冷却与普通武器重复")
+        page = self.realtime_page
+        for widget, value in (
+            (page.health_target, 0),
+            (page.heat_target, 0),
+        ):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        for checkbox in (page.health_maintenance, page.heat_maintenance, page.weapon_repeat):
+            checkbox.blockSignals(True)
+            checkbox.setChecked(True)
+            checkbox.blockSignals(False)
+        self._battle_plan_paused = False
+        self._queue_battle_configuration(practice_only=True)
+        self._append_realtime_event("练习方案已配置，进入练习战斗后自动应用")
 
     def _connect_realtime_monitor(self) -> None:
         self._realtime_connection_requested = True
         self.realtime_reconnect_timer.stop()
         self.realtime_page.clear_player_state("正在连接游戏…")
-        self.realtime_page.reset_effect_controls()
+        self.realtime_page.set_plan_controls(self.battle_plan.effects)
         if self.workspace is None:
             self._realtime_connection_requested = False
             self._show_error("请先选择游戏目录")
@@ -831,8 +1038,7 @@ class MainWindow(QMainWindow):
         self.realtime_poll_timer.start()
         assert snapshot.instance is not None
         self.realtime_status.setText(
-            f"已连接游戏 · PID {snapshot.instance.pid}\n"
-            "进入普通战斗或练习模式后自动显示战斗数据。"
+            f"已连接游戏 · PID {snapshot.instance.pid}\n进入普通战斗或练习模式后自动显示战斗数据。"
         )
         self._append_realtime_event(f"已连接游戏：PID {snapshot.instance.pid}")
 
@@ -845,6 +1051,14 @@ class MainWindow(QMainWindow):
         if snapshot.state == "disconnected":
             self._synchronize_realtime_disconnect(monitor, snapshot)
             return
+        if (
+            self._battle_plan_applied
+            and not self._battle_plan_paused
+            and not self.realtime_page.remember_effects.isChecked()
+            and not snapshot.active_effects
+        ):
+            self.battle_plan = BattlePlan()
+            self._battle_plan_applied = False
         self._sync_realtime_poll_interval(snapshot)
         assert snapshot.instance is not None
         self.realtime_status.setText(
@@ -853,12 +1067,24 @@ class MainWindow(QMainWindow):
         self.realtime_page.show_active_effects(snapshot.active_effects)
         self.realtime_page.sync_effect_controls(snapshot.active_effects)
         if not self._realtime_hud_available():
-            self.realtime_page.clear_player_state(
-                "当前游戏版本不支持战斗数据。"
-            )
+            self.realtime_page.clear_player_state("当前游戏版本不支持战斗数据。")
             return
         try:
-            self._show_realtime_player_state(monitor.read_player_state())
+            player = monitor.read_player_state()
+            self._show_realtime_player_state(player)
+            if self.battle_plan.effects and set(self.battle_plan.effects).issubset(
+                monitor.snapshot.active_effects
+            ):
+                self._battle_plan_applied = True
+            if not self._battle_plan_paused and self.battle_plan.resume(monitor, player):
+                self._battle_plan_applied = True
+                self._append_realtime_event("已为当前玩家重新验证并恢复战斗方案")
+                applied = monitor.tick_effects()
+                if applied.state == "disconnected":
+                    self._synchronize_realtime_disconnect(monitor, applied)
+                    return
+                self.realtime_page.show_active_effects(applied.active_effects)
+                self._sync_realtime_poll_interval(monitor.snapshot)
             if self._realtime_weapon_state_available():
                 try:
                     self._show_realtime_weapon_state(monitor.read_weapon_state())
@@ -877,8 +1103,14 @@ class MainWindow(QMainWindow):
             )
         except RealtimeEffectError as error:
             self.realtime_page.clear_player_state(f"暂时无法读取战斗数据：{error}")
+            self.realtime_status.setText(f"暂时无法读取战斗数据：{error}")
+            self.battle_plan = BattlePlan()
+            self._battle_plan_applied = False
+            self._battle_plan_paused = False
+            self.realtime_page.reset_effect_controls()
             if monitor.snapshot.state == "disconnected":
                 self._synchronize_realtime_disconnect(monitor)
+        self._sync_battle_assistant()
 
     def _restore_realtime_health(self) -> None:
         monitor = self.realtime_monitor
@@ -925,127 +1157,51 @@ class MainWindow(QMainWindow):
             f"Force Crash 补充完成：{state.force_crash}/{state.max_force_crash}"
         )
 
-    def _health_maintenance_changed(self, enabled: bool) -> None:
+    def _queue_battle_configuration(self, *, practice_only: bool = False) -> None:
+        """只排队用户意图；实际启用和写入统一由战斗轮询完成。"""
         monitor = self.realtime_monitor
-        if monitor is None:
-            if enabled:
-                self.realtime_page.health_maintenance.setChecked(False)
-            return
-        try:
-            if enabled:
-                monitor.enable_health_maintenance(self.realtime_page.health_target.value())
-            else:
-                monitor.stop_health_maintenance()
-        except RealtimeEffectError as error:
-            self.realtime_page.health_maintenance.blockSignals(True)
-            self.realtime_page.health_maintenance.setChecked(False)
-            self.realtime_page.health_maintenance.blockSignals(False)
+        if monitor is not None:
+            monitor.stop_effects()
+        self._battle_plan_applied = False
+        self._capture_battle_plan(practice_only=practice_only)
+        self._append_realtime_event("方案已更新，等待战斗验证后应用")
+        if monitor is not None:
             self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("血量维持", str(error))
-            return
-        self.realtime_page.show_active_effects(monitor.snapshot.active_effects)
-        self._sync_realtime_poll_interval(monitor.snapshot)
-        self._append_realtime_event("血量维持已启用" if enabled else "血量维持已停用")
+            self._synchronize_realtime_disconnect(monitor)
+        elif (
+            self.workspace is not None
+            and self.battle_plan.effects
+            and not self._realtime_connection_requested
+        ):
+            self._connect_realtime_monitor()
+        self._sync_battle_assistant()
+
+    def _health_maintenance_changed(self, enabled: bool) -> None:
+        self._queue_battle_configuration()
 
     def _health_target_changed(self, target: int) -> None:
-        if not self.realtime_page.health_maintenance.isChecked():
-            return
-        monitor = self.realtime_monitor
-        if monitor is None:
-            return
-        try:
-            monitor.enable_health_maintenance(target)
-        except RealtimeEffectError as error:
-            try:
-                monitor.stop_health_maintenance()
-            except RealtimeEffectError:
-                pass
-            self.realtime_page.health_maintenance.blockSignals(True)
-            self.realtime_page.health_maintenance.setChecked(False)
-            self.realtime_page.health_maintenance.blockSignals(False)
-            self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("更新血量维持目标", str(error))
-            self._synchronize_realtime_disconnect(monitor)
-            return
-        self._append_realtime_event(f"血量维持目标已更新为 {target}")
-        self._sync_realtime_poll_interval(monitor.snapshot)
+        if self.realtime_page.health_maintenance.isChecked():
+            self._queue_battle_configuration()
 
     def _heat_maintenance_changed(self, enabled: bool) -> None:
-        monitor = self.realtime_monitor
-        if monitor is None:
-            if enabled:
-                self.realtime_page.heat_maintenance.setChecked(False)
-            return
-        try:
-            if enabled:
-                monitor.enable_heat_maintenance(self.realtime_page.heat_target.value())
-            else:
-                monitor.stop_heat_maintenance()
-        except RealtimeEffectError as error:
-            self.realtime_page.heat_maintenance.blockSignals(True)
-            self.realtime_page.heat_maintenance.setChecked(False)
-            self.realtime_page.heat_maintenance.blockSignals(False)
-            self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("热量阈值", str(error))
-            return
-        self.realtime_page.show_active_effects(monitor.snapshot.active_effects)
-        self._sync_realtime_poll_interval(monitor.snapshot)
-        self._append_realtime_event(
-            "热量阈值 / 武器恢复已启用" if enabled else "热量阈值 / 武器恢复已停用"
-        )
+        self._queue_battle_configuration()
 
     def _heat_target_changed(self, target: int) -> None:
-        if not self.realtime_page.heat_maintenance.isChecked():
-            return
-        monitor = self.realtime_monitor
-        if monitor is None:
-            return
-        try:
-            monitor.enable_heat_maintenance(target)
-        except RealtimeEffectError as error:
-            try:
-                monitor.stop_heat_maintenance()
-            except RealtimeEffectError:
-                pass
-            self.realtime_page.heat_maintenance.blockSignals(True)
-            self.realtime_page.heat_maintenance.setChecked(False)
-            self.realtime_page.heat_maintenance.blockSignals(False)
-            self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("更新热量阈值", str(error))
-            self._synchronize_realtime_disconnect(monitor)
-            return
-        self._sync_realtime_poll_interval(monitor.snapshot)
-        self._append_realtime_event(f"热量阈值 / 武器恢复目标已更新为 {target}")
+        if self.realtime_page.heat_maintenance.isChecked():
+            self._queue_battle_configuration()
 
     def _weapon_repeat_changed(self, enabled: bool) -> None:
-        monitor = self.realtime_monitor
-        if monitor is None:
-            if enabled:
-                self.realtime_page.weapon_repeat.setChecked(False)
-            return
-        try:
-            if enabled:
-                monitor.enable_weapon_repeat()
-            else:
-                monitor.stop_weapon_repeat()
-        except RealtimeEffectError as error:
-            self.realtime_page.weapon_repeat.blockSignals(True)
-            self.realtime_page.weapon_repeat.setChecked(False)
-            self.realtime_page.weapon_repeat.blockSignals(False)
-            self._sync_realtime_poll_interval(monitor.snapshot)
-            self._show_realtime_action_error("同连段武器重复", str(error))
-            self._synchronize_realtime_disconnect(monitor)
-            return
-        self.realtime_page.show_active_effects(monitor.snapshot.active_effects)
-        self._sync_realtime_poll_interval(monitor.snapshot)
-        self._append_realtime_event(
-            "同连段武器可重复使用已启用" if enabled else "同连段武器可重复使用已停用"
-        )
+        self._queue_battle_configuration()
+
+    def _force_crash_maintenance_changed(self, enabled: bool) -> None:
+        self._queue_battle_configuration()
 
     def _sync_realtime_poll_interval(self, snapshot: RealtimeSnapshot) -> None:
         if snapshot.state == "connected_read_only" and "weapon_repeat" in snapshot.active_effects:
             interval = REALTIME_WEAPON_REPEAT_POLL_INTERVAL_MS
-        elif snapshot.state == "connected_read_only" and snapshot.active_effects:
+        elif snapshot.state == "connected_read_only" and (
+            snapshot.active_effects or (self.battle_plan.effects and not self._battle_plan_paused)
+        ):
             interval = REALTIME_EFFECT_POLL_INTERVAL_MS
         else:
             interval = REALTIME_IDLE_POLL_INTERVAL_MS
@@ -1053,6 +1209,9 @@ class MainWindow(QMainWindow):
             self.realtime_poll_timer.setInterval(interval)
 
     def _show_realtime_player_state(self, state: PlayerState) -> None:
+        targets = (self.realtime_page.health_target, self.realtime_page.heat_target)
+        for widget in targets:
+            widget.blockSignals(True)
         self.realtime_page.show_player_state(
             state.health,
             state.max_health,
@@ -1064,6 +1223,13 @@ class MainWindow(QMainWindow):
             state.write_inhibited,
             state.scene_name,
         )
+        plan = self.battle_plan
+        if plan.health is not None:
+            self.realtime_page.health_target.setValue(0 if plan.full_health else plan.health)
+        if plan.heat is not None:
+            self.realtime_page.heat_target.setValue(plan.heat)
+        for widget in targets:
+            widget.blockSignals(False)
 
     def _show_realtime_weapon_state(self, state: RealtimeWeaponState) -> None:
         self.realtime_page.show_weapon_state(
@@ -1087,6 +1253,10 @@ class MainWindow(QMainWindow):
         disconnected = snapshot or monitor.snapshot
         if disconnected.state != "disconnected":
             return
+        if not disconnected.recoverable or not self.realtime_page.remember_effects.isChecked():
+            self.battle_plan = BattlePlan()
+            self._battle_plan_applied = False
+            self._battle_plan_paused = False
         self.realtime_monitor = None
         self.realtime_poll_timer.stop()
         self.realtime_poll_timer.setInterval(REALTIME_IDLE_POLL_INTERVAL_MS)
@@ -1095,6 +1265,7 @@ class MainWindow(QMainWindow):
         self.realtime_page.clear_player_state(disconnected.message)
         self.realtime_page.reset_effect_controls()
         self._schedule_realtime_reconnect()
+        self._sync_battle_assistant()
 
     def _realtime_hud_available(self) -> bool:
         if self.workspace is None:
@@ -1130,8 +1301,11 @@ class MainWindow(QMainWindow):
         self._append_realtime_event(event)
 
     def _auto_reconnect_changed(self, enabled: bool) -> None:
+        self.settings.setValue("battle/reconnect", enabled)
         if enabled:
             self._append_realtime_event("已启用意外断开后的只读自动重连")
+            if self._realtime_connection_requested and self.realtime_monitor is None:
+                self._schedule_realtime_reconnect()
             return
         self.realtime_reconnect_timer.stop()
         self._append_realtime_event("已停用自动重连")
@@ -1147,6 +1321,9 @@ class MainWindow(QMainWindow):
         self._append_realtime_event(f"实时会话停用：{reason}")
 
     def _deactivate_realtime_session(self, reason: str, *, record_stop: bool) -> None:
+        self.battle_plan = BattlePlan()
+        self._battle_plan_applied = False
+        self._battle_plan_paused = False
         self._realtime_connection_requested = False
         self.realtime_poll_timer.stop()
         self.realtime_reconnect_timer.stop()
@@ -1156,6 +1333,7 @@ class MainWindow(QMainWindow):
             monitor.disconnect(reason)
         self.realtime_page.clear_player_state(reason)
         self.realtime_page.reset_effect_controls()
+        self._sync_battle_assistant()
         if record_stop:
             self.realtime_status.setText(reason)
             self._record_realtime_stop(reason)
@@ -1471,6 +1649,8 @@ class MainWindow(QMainWindow):
             == "verified_write",
             force_crash_refill=capability_by_id(matrix, REALTIME_FORCE_CRASH_REFILL).state
             == "verified_write",
+            force_crash_maintenance=capability_by_id(matrix, REALTIME_FORCE_CRASH_MAINTENANCE).state
+            in {"experimental_write", "verified_write"},
             weapon_repeat=capability_by_id(matrix, REALTIME_WEAPON_REPEAT).state
             == "verified_write",
         )
@@ -1628,9 +1808,7 @@ class MainWindow(QMainWindow):
         entry = self.workspace.force_crash_catalog[numbers[0]]
         state = self.force_crash_session.target_state_for(entry.number)
         suffix = f" · 另选 {len(numbers) - 1} 项" if len(numbers) > 1 else ""
-        self.force_crash_detail_title.setText(
-            f"{entry.name_zh or entry.name_ja}{suffix}"
-        )
+        self.force_crash_detail_title.setText(f"{entry.name_zh or entry.name_ja}{suffix}")
         self.force_crash_detail_state.setText(
             f"{entry.name_ja} · 编号 {entry.number:02d} · 成长记录 {entry.record_index} · "
             + ("已解锁" if state == 5 else f"状态 {state}")
@@ -1744,9 +1922,7 @@ class MainWindow(QMainWindow):
             f"当前：状态 {record.development_state} / Lv{record.level_index + 1} / "
             f"成长 {record.reported_level_progress} / 降热 {record.heat_reduction}"
         )
-        self.detail_description.setPlainText(
-            f"游戏资源中的原文：{entry.description_ja or '暂无'}"
-        )
+        self.detail_description.setPlainText(f"游戏资源中的原文：{entry.description_ja or '暂无'}")
         if not entry.requirements:
             requirements = "初始武器，无开发前置。"
         else:
@@ -2374,6 +2550,12 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         self._deactivate_realtime_session("窗口关闭", record_stop=False)
+        self.hotkeys.stop()
+        self.hud_timer.stop()
+        self.settings.setValue("battle/hud_geometry", self.battle_hud.saveGeometry())
+        self.settings.setValue("battle/hud_opacity", self.battle_hud.opacity.value())
+        self.settings.setValue("battle/hud_compact", self.battle_hud.compact.isChecked())
+        self.battle_hud.close()
         self.settings.setValue("window_geometry", self.saveGeometry())
         event.accept()
 

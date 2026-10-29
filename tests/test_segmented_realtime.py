@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from bfmod.battle_plan import BattlePlan
 from bfmod.process_memory import FakeProcessMemoryAdapter, ProcessMemoryError
 from bfmod.realtime import (
     AddressPath,
@@ -42,7 +43,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
         struct.pack_into("<h", raw, 0x23A, 7500)
         struct.pack_into("<2i", raw, 0x300, 7, 7)
         raw[0x23C] = 1
-        raw[0x25C : 0x269] = bytes((1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1))
+        raw[0x25C:0x269] = bytes((1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1))
         raw[0x308] = 3
         struct.pack_into("<25h", raw, 0x314, 0, 69, 0, *([-999] * 22))
         raw[0x346] = 3
@@ -183,9 +184,24 @@ class SegmentedRealtimeTests(unittest.TestCase):
 
         state = monitor.read_weapon_state()
 
-        self.assertEqual(tuple(slot.weapon_id for slot in state.slots), (
-            0, 3, 12, 69, 99, 168, 6, 78, 51, 96, 102, 135, 192,
-        ))
+        self.assertEqual(
+            tuple(slot.weapon_id for slot in state.slots),
+            (
+                0,
+                3,
+                12,
+                69,
+                99,
+                168,
+                6,
+                78,
+                51,
+                96,
+                102,
+                135,
+                192,
+            ),
+        )
 
     def test_weapon_state_rejects_player_owner_replaced_during_weapon_sample(self) -> None:
         monitor = RealtimeMonitor(
@@ -212,7 +228,8 @@ class SegmentedRealtimeTests(unittest.TestCase):
             with patch.object(connection, "read", side_effect=racing_read):
                 with self.assertRaisesRegex(RealtimeEffectError, "对象|地址链"):
                     monitor.read_weapon_state()
-            self.assertEqual(monitor.snapshot.state, "disconnected")
+            self.assertEqual(monitor.snapshot.state, "connected_read_only")
+            self.assertEqual(monitor.snapshot.active_effects, ())
         finally:
             writer.close()
 
@@ -487,7 +504,8 @@ class SegmentedRealtimeTests(unittest.TestCase):
 
         snapshot = monitor.tick_effects()
 
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ())
         reader = self.adapter.open_process(self.instance)
         try:
             self.assertEqual(
@@ -669,8 +687,11 @@ class SegmentedRealtimeTests(unittest.TestCase):
             self.profile,
             player_state=layout,
             permissions=EffectPermissions(
-                health_restore=True, health_maintenance=True,
-                heat_reduce=True, heat_maintenance=True, weapon_repeat=True,
+                health_restore=True,
+                health_maintenance=True,
+                heat_reduce=True,
+                heat_maintenance=True,
+                weapon_repeat=True,
             ),
             segmented_health_write=SegmentedHealthWriteLayout(),
             heat_write=HeatWriteLayout(natural_zero_transition=1),
@@ -717,8 +738,10 @@ class SegmentedRealtimeTests(unittest.TestCase):
         monitor._profile = replace(
             monitor._profile,
             permissions=EffectPermissions(
-                health_restore=True, health_maintenance=True,
-                heat_reduce=True, heat_maintenance=True,
+                health_restore=True,
+                health_maintenance=True,
+                heat_reduce=True,
+                heat_maintenance=True,
             ),
             weapon_repeat_write=None,
         )
@@ -749,7 +772,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
         adapter.mutation_address = 0x400040
         adapter.mutation_data = b"\x01\x00"
         snapshot = monitor.tick_effects()
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
         self.assertEqual(snapshot.active_effects, ())
         reader = adapter.open_process(instance)
         try:
@@ -883,7 +906,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
         finally:
             writer.close()
 
-        self.assertEqual(monitor.snapshot.state, "disconnected")
+        self.assertEqual(monitor.snapshot.state, "connected_read_only")
 
     def test_inconsistent_segment_count_or_death_marker_fails_closed(self) -> None:
         for segment, remaining in ((100, 3), (5, -1)):
@@ -1189,7 +1212,8 @@ class SegmentedRealtimeTests(unittest.TestCase):
         writer.write(0x400110, struct.pack("<I", 0x400220))
         writer.close()
         snapshot = monitor.tick_effects()
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ())
         self.assertIn("对象", snapshot.message)
 
     def test_segmented_maintenance_writes_exact_total_target_without_reviving(self) -> None:
@@ -1212,7 +1236,8 @@ class SegmentedRealtimeTests(unittest.TestCase):
 
         self.set_life(0, -1)
         snapshot = monitor.tick_effects()
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ())
         self.assertIn("死亡", snapshot.message)
 
     def test_segmented_restore_fails_closed_when_atomic_transaction_write_fails(self) -> None:
@@ -1257,7 +1282,8 @@ class SegmentedRealtimeTests(unittest.TestCase):
 
         snapshot = monitor.tick_effects()
 
-        self.assertEqual(snapshot.state, "disconnected")
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ())
         self.assertIn("对象", snapshot.message)
         reader = self.adapter.open_process(self.instance)
         self.assertEqual(struct.unpack("<3h", reader.read(0x400200, 6)), (10, 1, 2))
@@ -1314,7 +1340,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
                 with patch.object(monitor, method_name, side_effect=swap_owner_before_write):
                     snapshot = monitor.tick_effects()
 
-                self.assertEqual(snapshot.state, "disconnected")
+                self.assertEqual(snapshot.state, "connected_read_only")
                 self.assertIn("对象", snapshot.message)
                 reader = self.adapter.open_process(self.instance)
                 self.assertEqual(struct.unpack("<3h", reader.read(0x400200, 6)), (10, 1, 2))
@@ -1359,7 +1385,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
                     else:
                         monitor.refill_force_crash_once()
 
-                self.assertEqual(monitor.snapshot.state, "disconnected")
+                self.assertEqual(monitor.snapshot.state, "connected_read_only")
                 reader = adapter.open_process(instance)
                 self.assertEqual(struct.unpack("<3h", reader.read(0x400200, 6)), (100, 2, 2))
                 self.assertEqual(struct.unpack("<h", reader.read(0x400210, 2))[0], 30)
@@ -1387,7 +1413,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RealtimeEffectError, "对象"):
             monitor.reduce_heat_once(0)
 
-        self.assertEqual(monitor.snapshot.state, "disconnected")
+        self.assertEqual(monitor.snapshot.state, "connected_read_only")
         reader = adapter.open_process(instance)
         self.assertEqual(struct.unpack("<h", reader.read(0x400210, 2))[0], 30)
 
@@ -1425,7 +1451,7 @@ class SegmentedRealtimeTests(unittest.TestCase):
         finally:
             mutation_writer.close()
 
-        self.assertEqual(monitor.snapshot.state, "disconnected")
+        self.assertEqual(monitor.snapshot.state, "connected_read_only")
         reader = self.adapter.open_process(self.instance)
         self.assertEqual(struct.unpack("<3h", reader.read(0x400200, 6)), (10, 1, 2))
 
@@ -1667,6 +1693,244 @@ class SegmentedRealtimeTests(unittest.TestCase):
         self.assertEqual(snapshot.state, "disconnected")
         self.assertEqual(snapshot.active_effects, ())
         self.assertIn("写入后", snapshot.message)
+
+    def test_battle_plan_resumes_after_scene_exit_and_new_player_object(self) -> None:
+        profile = replace(
+            self.profile,
+            permissions=EffectPermissions(
+                health_restore=True,
+                health_maintenance=True,
+                heat_reduce=True,
+                heat_maintenance=True,
+            ),
+            segmented_health_write=SegmentedHealthWriteLayout(),
+            heat_write=HeatWriteLayout(natural_zero_transition=1),
+        )
+        monitor = RealtimeMonitor(self.adapter, profile)
+        monitor.connect()
+        plan = BattlePlan(health=300, full_health=True, heat=0)
+        self.assertTrue(plan.resume(monitor, monitor.read_player_state()))
+        writer = self.adapter.open_process(self.instance, writable=True)
+        try:
+            writer.write(0x400040, b"\0")
+            self.assertEqual(monitor.tick_effects().active_effects, ())
+            self.assertEqual(monitor.snapshot.state, "connected_read_only")
+            # 下一场重建生命组件，最大 HP 变为 400；上一场地址不能再写。
+            writer.write(0x400280, struct.pack("<3h", 10, 1, 3))
+            writer.write(0x400290, struct.pack("<2h", 80, 130))
+            writer.write(0x4002BA, struct.pack("<h", 0))
+            writer.write(0x400110, struct.pack("<I", 0x400280))
+            writer.write(0x400040, b"\1")
+            self.assertTrue(plan.resume(monitor, monitor.read_player_state()))
+            self.assertEqual(monitor.tick_effects().active_effects, ("health", "heat"))
+            self.assertEqual(monitor.read_player_state().health, 400)
+            self.assertEqual(writer.read(0x400200, 6), struct.pack("<3h", 100, 2, 2))
+            self.assertEqual(writer.read(0x400290, 2), struct.pack("<h", 1))
+            self.assertFalse(plan.resume(monitor, monitor.read_player_state()))
+        finally:
+            writer.close()
+
+    def test_exit_between_poll_and_sample_preserves_reconnect_reason(self) -> None:
+        monitor = RealtimeMonitor(
+            self.adapter,
+            replace(
+                self.profile,
+                permissions=EffectPermissions(health_restore=True, health_maintenance=True),
+                segmented_health_write=SegmentedHealthWriteLayout(),
+            ),
+        )
+        monitor.connect()
+        monitor.enable_health_maintenance(300)
+
+        def exit_during_sample(*args: object) -> object:
+            self.adapter.terminate(self.instance)
+            raise ProcessMemoryError("进程在采样时退出")
+
+        with patch.object(monitor, "_read_player_state", side_effect=exit_during_sample):
+            snapshot = monitor.tick_effects()
+        self.assertEqual(snapshot.state, "disconnected")
+        self.assertTrue(snapshot.recoverable)
+        self.assertEqual(snapshot.active_effects, ())
+
+    def test_force_crash_starts_between_tick_and_write_pauses_without_disconnect(self) -> None:
+        profile = replace(
+            self.profile,
+            permissions=EffectPermissions(health_restore=True, health_maintenance=True),
+            segmented_health_write=SegmentedHealthWriteLayout(),
+            player_state=replace(
+                self.layout, write_inhibitors=(IntegerField(0x41, 1, 0, 31, path=AddressPath()),)
+            ),
+        )
+        monitor = RealtimeMonitor(self.adapter, profile)
+        monitor.connect()
+        monitor.enable_health_maintenance(300)
+        self.set_life(10, 1)
+        original_open = self.adapter.open_process
+
+        def begin_force_crash(instance, *, writable=False):  # type: ignore[no-untyped-def]
+            if writable:
+                connection = original_open(instance, writable=True)
+                connection.write(0x400041, b"\1")
+                connection.close()
+            return original_open(instance, writable=writable)
+
+        with patch.object(self.adapter, "open_process", side_effect=begin_force_crash):
+            snapshot = monitor.tick_effects()
+        self.assertEqual(snapshot.state, "connected_read_only")
+        self.assertEqual(snapshot.active_effects, ("health",))
+        self.assertEqual(monitor.read_player_state().health, 110)
+
+    def _fc_lock_monitor(self) -> RealtimeMonitor:
+        monitor = RealtimeMonitor(
+            self.adapter,
+            replace(
+                self.profile,
+                permissions=EffectPermissions(
+                    force_crash_refill=True, force_crash_maintenance=True
+                ),
+                force_crash_write=ForceCrashWriteLayout(),
+                player_state=replace(
+                    self.layout,
+                    write_inhibitors=(IntegerField(0x41, 1, 0, 31, path=AddressPath()),),
+                ),
+            ),
+        )
+        monitor.connect()
+        return monitor
+
+    def test_fc_lock_refills_only_gauge_and_waits_until_cast_finishes(self) -> None:
+        monitor = self._fc_lock_monitor()
+        monitor.enable_force_crash_maintenance()
+        reader = self.adapter.open_process(self.instance)
+        writer = self.adapter.open_process(self.instance, writable=True)
+        try:
+            before = reader.read(0x400000, 0x700)
+            self.assertEqual(monitor.tick_effects().active_effects, ("force_crash",))
+            expected = bytearray(before)
+            expected[0x23A:0x23C] = struct.pack("<h", 10000)
+            self.assertEqual(reader.read(0x400000, 0x700), bytes(expected))
+            writer.write(0x400041, b"\1")
+            writer.write(0x40023A, struct.pack("<h", 0))
+            self.assertEqual(monitor.tick_effects().active_effects, ("force_crash",))
+            self.assertEqual(monitor.read_player_state().force_crash, 0)
+            writer.write(0x400041, b"\0")
+            monitor.tick_effects()
+            self.assertEqual(monitor.read_player_state().force_crash, 10000)
+            monitor.stop_effects()
+            writer.write(0x40023A, struct.pack("<h", 500))
+            monitor.tick_effects()
+            self.assertEqual(monitor.read_player_state().force_crash, 500)
+        finally:
+            reader.close()
+            writer.close()
+
+    def test_fc_lock_revokes_on_object_replacement_and_on_write_failure(self) -> None:
+        monitor = self._fc_lock_monitor()
+        monitor.enable_force_crash_maintenance()
+        writer = self.adapter.open_process(self.instance, writable=True)
+        writer.write(0x400190, struct.pack("<2I", 0x400200, 0x400300))
+        writer.write(0x400080, struct.pack("<I", 0x400180))
+        writer.close()
+        self.assertEqual(monitor.tick_effects().active_effects, ())
+        self.assertEqual(monitor.read_player_state().force_crash, 7500)
+        monitor.enable_force_crash_maintenance()
+        original_open = self.adapter.open_process
+
+        def deny_write(instance, *, writable=False):  # type: ignore[no-untyped-def]
+            if writable:
+                raise ProcessMemoryError("injected FC write denied")
+            return original_open(instance, writable=False)
+
+        with patch.object(self.adapter, "open_process", side_effect=deny_write):
+            snapshot = monitor.tick_effects()
+        self.assertEqual(snapshot.state, "disconnected")
+        self.assertFalse(snapshot.active_effects)
+
+    def test_fc_lock_does_not_revive_or_write_in_menus(self) -> None:
+        with self.assertRaisesRegex(ValueError, "一次补充"):
+            EffectPermissions(force_crash_maintenance=True)
+        monitor = self._fc_lock_monitor()
+        monitor.enable_force_crash_maintenance()
+        self.set_life(0, -1)
+        self.assertFalse(monitor.tick_effects().active_effects)
+        self.assertEqual(monitor.read_player_state().force_crash, 7500)
+        self.set_life(100, 2)
+        monitor.enable_force_crash_maintenance()
+        writer = self.adapter.open_process(self.instance, writable=True)
+        writer.write(0x400040, b"\0")
+        writer.close()
+        self.assertFalse(monitor.tick_effects().active_effects)
+
+    def test_prebattle_gui_applies_saved_settings_on_first_valid_poll(self) -> None:
+        from PySide6.QtWidgets import QApplication
+
+        from bfmod.gui import MainWindow, create_application
+
+        application = QApplication.instance() or create_application(["prebattle-test"])
+        assert application is not None
+        profile = replace(
+            self.profile,
+            permissions=EffectPermissions(
+                health_restore=True,
+                health_maintenance=True,
+                heat_reduce=True,
+                heat_maintenance=True,
+                force_crash_refill=True,
+                force_crash_maintenance=True,
+            ),
+            segmented_health_write=SegmentedHealthWriteLayout(),
+            heat_write=HeatWriteLayout(),
+            force_crash_write=ForceCrashWriteLayout(),
+        )
+        monitor = RealtimeMonitor(self.adapter, profile)
+        monitor.connect()
+        writer = self.adapter.open_process(self.instance, writable=True)
+        writer.write(0x400040, b"\0")
+        with patch.object(MainWindow, "_load_initial_workspace"):
+            window = MainWindow()
+        window.realtime_monitor = monitor
+        page = window.realtime_page
+        page.remember_effects.setChecked(True)
+        try:
+            page.set_effect_capabilities(
+                hud=True,
+                health_restore=True,
+                health_maintenance=True,
+                heat_reduce=True,
+                heat_maintenance=True,
+                force_crash_refill=True,
+                force_crash_maintenance=True,
+            )
+            self.assertTrue(page.health_maintenance.isEnabled())
+            self.assertFalse(page.restore_health_button.isEnabled())
+            page.health_maintenance.setChecked(True)
+            page.heat_target.setValue(20)
+            page.heat_maintenance.setChecked(True)
+            page.force_crash_maintenance.setChecked(True)
+            self.assertTrue(window.battle_plan.full_health)
+            self.assertEqual(monitor.snapshot.active_effects, ())
+            self.assertEqual(writer.read(0x40023A, 2), struct.pack("<h", 7500))
+            with (
+                patch.object(window, "_realtime_hud_available", return_value=True),
+                patch.object(window, "_realtime_weapon_state_available", return_value=False),
+            ):
+                window._poll_realtime_monitor()
+                self.assertEqual(page.heat_target.value(), 20)
+                writer.write(0x400040, b"\1")
+                window._poll_realtime_monitor()
+                player = monitor.read_player_state()
+                self.assertEqual((player.health, player.heat, player.force_crash), (300, 20, 10000))
+                self.assertEqual(monitor.snapshot.active_effects, ("health", "heat", "force_crash"))
+                page.remember_effects.setChecked(False)
+                writer.write(0x400040, b"\0")
+                window._poll_realtime_monitor()
+                self.assertFalse(window.battle_plan.effects)
+                writer.write(0x400040, b"\1")
+                window._poll_realtime_monitor()
+                self.assertEqual(monitor.snapshot.active_effects, ())
+        finally:
+            writer.close()
+            window.close()
 
 
 class _FailSegmentTransactionAdapter(FakeProcessMemoryAdapter):

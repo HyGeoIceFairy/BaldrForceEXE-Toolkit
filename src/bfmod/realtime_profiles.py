@@ -31,6 +31,7 @@ RealtimeCapabilityId: TypeAlias = Literal[
     "realtime_heat_reduce",
     "realtime_heat_maintenance",
     "realtime_force_crash_refill",
+    "realtime_force_crash_maintenance",
     "realtime_weapon_state",
     "realtime_weapon_repeat",
 ]
@@ -77,6 +78,14 @@ class RealtimeProfileDefinition:
             "realtime_heat_reduce"
         ) not in {"experimental_write", "verified_write"}:
             raise ValueError("持续热量能力必须先声明一次降热能力")
+        if support.get("realtime_force_crash_maintenance") in {
+            "experimental_write",
+            "verified_write",
+        } and support.get("realtime_force_crash_refill") not in {
+            "experimental_write",
+            "verified_write",
+        }:
+            raise ValueError("持续 FC 能力必须先声明一次补充能力")
 
 
 @dataclass(frozen=True)
@@ -170,11 +179,12 @@ KNOWN_REALTIME_PROFILE = RealtimeProfileDefinition(
         ProfileCapabilitySupport("realtime_health_maintenance", "verified_write"),
         ProfileCapabilitySupport("realtime_heat_maintenance", "verified_write"),
         ProfileCapabilitySupport("realtime_force_crash_refill", "verified_write"),
+        ProfileCapabilitySupport("realtime_force_crash_maintenance", "verified_write"),
         ProfileCapabilitySupport("realtime_weapon_state", "read_only"),
         ProfileCapabilitySupport("realtime_weapon_repeat", "verified_write"),
     ),
     evidence_source="本地受控取证记录（未纳入发行包）",
-    verified_date="2026-09-26",
+    verified_date="2026-10-30",
     read_validation=(
         "路径、进程实例、x86 架构、十五处模块 RVA 指纹、动态对象链、玩家控制更新、"
         "玩家身份、普通与练习战斗场景、分段生命、普通热量和上限 10000 的 Force "
@@ -183,10 +193,13 @@ KNOWN_REALTIME_PROFILE = RealtimeProfileDefinition(
     write_validation=(
         "隔离实机已验证一次回血 4564→6240、一次降热与持续热量纠正；目标 0 通过"
         "最小正值交还游戏自然归零，保留连段武器恢复路径。对象替换、门禁、死亡、指纹、进程实例和"
-        "权限故障均由自动测试验证为失效停写；重连不恢复持续效果。Force Crash 仪表"
+        "权限故障均由自动测试验证为失效停写；自动重连后仅按用户已配置方案重新验证恢复。"
+        "Force Crash 仪表"
         "已在隔离练习进程完成 10000→9000→10000 的受控一次补充与写后复核。武器重复仅清除"
         "12 个普通槽门禁，并以 24→23 回退保护 25 项历史；隔离练习中已完成同一实际武器 ID 0"
-        "连续 26 次真实命中，总伤害 1680、Force Crash 自然增长 3360，且保留原生伤害衰减与连段恢复"
+        "连续 26 次真实命中，总伤害 1680、Force Crash 自然增长 3360，且保留原生伤害衰减与连段恢复。"
+        "2026-10-30 用户实机确认 HUD 置顶与勾选、跨场次恢复、战前配置、"
+        "FC 满槽维持及连续发动后补满正常"
     ),
     known_failures=(
         "只在已验证的普通或练习战斗场景显示；对白、菜单、结算及对象切换期间主动清空",
@@ -226,6 +239,7 @@ def select_realtime_profile(
                     heat_reduce=True,
                     heat_maintenance=True,
                     force_crash_refill=True,
+                    force_crash_maintenance=True,
                     weapon_repeat=True,
                 ),
                 segmented_health_write=SegmentedHealthWriteLayout(),

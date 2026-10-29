@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baldr-force-modifier"
-version = "0.4.0"
+version = "1.0.2"
 description = "面向 Windows 的 BALDR FORCE EXE 存档编辑与实时战斗修改工具"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["BALDR FORCE EXE", "save editor", "Windows"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Win32 (MS Windows)",
     "Operating System :: Microsoft :: Windows :: Windows 10",
     "Operating System :: Microsoft :: Windows :: Windows 11",

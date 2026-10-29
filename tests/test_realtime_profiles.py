@@ -5,6 +5,7 @@ from pathlib import Path
 
 from bfmod.capabilities import (
     REALTIME_CONNECTION,
+    REALTIME_FORCE_CRASH_MAINTENANCE,
     REALTIME_FORCE_CRASH_REFILL,
     REALTIME_HEALTH_MAINTENANCE,
     REALTIME_HEALTH_RESTORE,
@@ -149,6 +150,7 @@ class RealtimeProfileRegistryTests(unittest.TestCase):
                 REALTIME_HEALTH_MAINTENANCE,
                 REALTIME_HEAT_MAINTENANCE,
                 REALTIME_FORCE_CRASH_REFILL,
+                REALTIME_FORCE_CRASH_MAINTENANCE,
                 REALTIME_WEAPON_STATE,
                 REALTIME_WEAPON_REPEAT,
             ),
