@@ -1,4 +1,4 @@
-BALDR FORCE EXE 修改器 1.0.2
+BALDR FORCE EXE 修改器 1.1.1
 第三方软件声明
 
 本发行包包含或依赖以下第三方软件：

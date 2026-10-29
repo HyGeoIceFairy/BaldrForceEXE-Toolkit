@@ -5,6 +5,8 @@ from pathlib import Path
 
 from bfmod.capabilities import (
     REALTIME_CONNECTION,
+    REALTIME_ENEMY_CLEAR,
+    REALTIME_ENEMY_CLEAR_MAINTENANCE,
     REALTIME_FORCE_CRASH_MAINTENANCE,
     REALTIME_FORCE_CRASH_REFILL,
     REALTIME_HEALTH_MAINTENANCE,
@@ -12,6 +14,7 @@ from bfmod.capabilities import (
     REALTIME_HEAT_MAINTENANCE,
     REALTIME_HEAT_REDUCE,
     REALTIME_PLAYER_HUD,
+    REALTIME_WAVE_SKIP,
     REALTIME_WEAPON_REPEAT,
     REALTIME_WEAPON_STATE,
 )
@@ -138,6 +141,14 @@ class RealtimeProfileRegistryTests(unittest.TestCase):
                 0x18377,
                 0x3F3BA,
                 0x1AE82,
+                0x1B240,
+                0x1B280,
+                0x4AE82,
+                0x4BE7D,
+                0x4D44F,
+                0x4D54D,
+                0x4D687,
+                0x4EF52,
             ),
         )
         self.assertEqual(
@@ -153,6 +164,9 @@ class RealtimeProfileRegistryTests(unittest.TestCase):
                 REALTIME_FORCE_CRASH_MAINTENANCE,
                 REALTIME_WEAPON_STATE,
                 REALTIME_WEAPON_REPEAT,
+                REALTIME_ENEMY_CLEAR,
+                REALTIME_ENEMY_CLEAR_MAINTENANCE,
+                REALTIME_WAVE_SKIP,
             ),
         )
         self.assertEqual(

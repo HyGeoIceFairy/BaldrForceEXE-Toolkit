@@ -196,6 +196,8 @@ class RealtimePage(QWidget):
         heat_target_changed: Callback,
         clear_events: Callback,
         force_crash_maintenance_changed: Callback,
+        clear_enemies: Callback | None = None,
+        enemy_clear_changed: Callback | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -222,6 +224,9 @@ class RealtimePage(QWidget):
         self._force_crash_refill_available = False
         self._weapon_repeat_available = False
         self._force_crash_maintenance_available = False
+        self._enemy_clear_available = False
+        self._enemy_clear_maintenance_available = False
+        self._ordinary_battle = False
         status_group = QGroupBox("连接状态")
         status_layout = QVBoxLayout(status_group)
         self.status = QLabel("尚未连接")
@@ -388,6 +393,12 @@ class RealtimePage(QWidget):
         one_shot.addWidget(self.refill_force_crash_button, 0, 1)
         one_shot.addWidget(self.reduce_heat_button, 1, 0)
         one_shot.addWidget(self.heat_once_target, 1, 1)
+        self.clear_enemies_button = QPushButton("一次清敌")
+        self.clear_enemies_button.setToolTip("当前普通战斗中的敌人立即退场；剧情事件保护对象跳过")
+        self.clear_enemies_button.setEnabled(False)
+        if clear_enemies is not None:
+            self.clear_enemies_button.clicked.connect(clear_enemies)
+        one_shot.addWidget(self.clear_enemies_button, 2, 0, 1, 2)
         effects_layout.addLayout(one_shot)
         continuous = QGridLayout()
         self.health_maintenance = QCheckBox("最低 HP 维持")
@@ -431,6 +442,15 @@ class RealtimePage(QWidget):
         self.force_crash_maintenance.setEnabled(False)
         self.force_crash_maintenance.toggled.connect(force_crash_maintenance_changed)
         continuous.addWidget(self.force_crash_maintenance, 3, 0, 1, 2)
+        self.enemy_clear = QCheckBox("自动清敌 / 刷波加速")
+        self.enemy_clear.setToolTip(
+            "可战前勾选，普通战斗和增援出现后自动清敌；本波结束后跳过受支持的刷波等待。"
+            "保留原生奖励与结算，不改实际战斗用时；剧情事件保护对象跳过。"
+        )
+        self.enemy_clear.setEnabled(False)
+        if enemy_clear_changed is not None:
+            self.enemy_clear.toggled.connect(enemy_clear_changed)
+        continuous.addWidget(self.enemy_clear, 4, 0, 1, 2)
         continuous.setColumnStretch(2, 1)
         effects_layout.addLayout(continuous)
         self.effect_status = QLabel("没有启用持续效果。")
@@ -445,6 +465,13 @@ class RealtimePage(QWidget):
         heat_recovery_note.setObjectName("muted")
         heat_recovery_note.setWordWrap(True)
         effects_layout.addWidget(heat_recovery_note)
+        clear_note = QLabel(
+            "自动清敌包含刷波加速：保留逐个击败、奖励与实际战斗计时；"
+            "剧情保护、循环或未知增援队列不加速。首领与其他关卡仍需复测。"
+        )
+        clear_note.setWordWrap(True)
+        clear_note.setObjectName("muted")
+        effects_layout.addWidget(clear_note)
         layout.addWidget(effects)
         layout.addWidget(weapons)
 
@@ -500,6 +527,7 @@ class RealtimePage(QWidget):
         self._has_player_state = True
         self._player_alive = health > 0
         self._write_paused = write_paused
+        self._ordinary_battle = battle_state == 0 and scene_name in (None, "普通战斗")
         if health <= 0:
             self.hud_status.setText("玩家已死亡 · 等待下一场战斗")
             self.hud_status.setObjectName("warning")
@@ -533,6 +561,7 @@ class RealtimePage(QWidget):
             ("heat", self.heat_maintenance),
             ("weapon_repeat", self.weapon_repeat),
             ("force_crash", self.force_crash_maintenance),
+            ("enemy_clear", self.enemy_clear),
         ):
             checkbox.blockSignals(True)
             checkbox.setChecked(effect in effects)
@@ -571,6 +600,7 @@ class RealtimePage(QWidget):
 
     def clear_player_state(self, reason: str) -> None:
         self._has_player_state = False
+        self._ordinary_battle = False
         self._write_paused = False
         self.clear_weapon_state()
         self.hud_status.setText(reason)
@@ -595,6 +625,8 @@ class RealtimePage(QWidget):
             names.append("同连段武器可重复使用")
         if "force_crash" in effects:
             names.append("FC 满槽维持")
+        if "enemy_clear" in effects:
+            names.append("自动清敌 / 刷波加速")
         self.effect_status.setText(f"已启用：{'、'.join(names)}" if names else "没有启用持续效果。")
 
     def reset_effect_controls(self) -> None:
@@ -603,6 +635,7 @@ class RealtimePage(QWidget):
             self.heat_maintenance,
             self.weapon_repeat,
             self.force_crash_maintenance,
+            self.enemy_clear,
         ):
             checkbox.blockSignals(True)
             checkbox.setChecked(False)
@@ -617,6 +650,7 @@ class RealtimePage(QWidget):
             ("heat", self.heat_maintenance),
             ("weapon_repeat", self.weapon_repeat),
             ("force_crash", self.force_crash_maintenance),
+            ("enemy_clear", self.enemy_clear),
         ):
             if effect not in effects and checkbox.isChecked():
                 checkbox.blockSignals(True)
@@ -634,6 +668,8 @@ class RealtimePage(QWidget):
         force_crash_refill: bool = False,
         weapon_repeat: bool = False,
         force_crash_maintenance: bool = False,
+        enemy_clear: bool = False,
+        enemy_clear_maintenance: bool = False,
     ) -> None:
         self._health_restore_available = health_restore
         self._health_maintenance_available = health_maintenance
@@ -642,6 +678,12 @@ class RealtimePage(QWidget):
         self._force_crash_refill_available = force_crash_refill
         self._weapon_repeat_available = weapon_repeat
         self._force_crash_maintenance_available = force_crash_maintenance
+        self._enemy_clear_available = enemy_clear
+        self._enemy_clear_maintenance_available = enemy_clear_maintenance
+        if not enemy_clear_maintenance:
+            self.enemy_clear.blockSignals(True)
+            self.enemy_clear.setChecked(False)
+            self.enemy_clear.blockSignals(False)
         if not force_crash_maintenance:
             self.force_crash_maintenance.blockSignals(True)
             self.force_crash_maintenance.setChecked(False)
@@ -677,6 +719,10 @@ class RealtimePage(QWidget):
         self.heat_target.setEnabled(self._heat_maintenance_available)
         self.weapon_repeat.setEnabled(self._weapon_repeat_available)
         self.force_crash_maintenance.setEnabled(self._force_crash_maintenance_available)
+        self.clear_enemies_button.setEnabled(
+            usable and self._ordinary_battle and self._enemy_clear_available
+        )
+        self.enemy_clear.setEnabled(self._enemy_clear_maintenance_available)
         self.practice_preset_button.setEnabled(
             self._health_maintenance_available
             and self._heat_maintenance_available

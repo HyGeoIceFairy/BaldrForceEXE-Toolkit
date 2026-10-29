@@ -16,6 +16,7 @@ class BattlePlan:
     weapon_repeat: bool = False
     practice_only: bool = False
     force_crash: bool = False
+    enemy_clear: bool = False
 
     @property
     def effects(self) -> tuple[str, ...]:
@@ -26,6 +27,7 @@ class BattlePlan:
                 ("heat", self.heat is not None),
                 ("weapon_repeat", self.weapon_repeat),
                 ("force_crash", self.force_crash),
+                ("enemy_clear", self.enemy_clear),
             )
             if enabled
         )
@@ -39,6 +41,7 @@ class BattlePlan:
             data = json.loads(raw)
             if isinstance(data, dict):
                 data.setdefault("force_crash", False)  # 兼容 v1.0.0/1.0.1 已保存方案。
+                data.setdefault("enemy_clear", False)
             if not isinstance(data, dict) or set(data) != set(asdict(cls())):
                 raise ValueError("战斗方案字段不完整")
             for key, minimum in (("health", 1), ("heat", 0)):
@@ -47,7 +50,13 @@ class BattlePlan:
                     type(value) is not int or not minimum <= value <= 1_000_000
                 ):
                     raise ValueError("战斗方案目标值无效")
-            for key in ("full_health", "weapon_repeat", "practice_only", "force_crash"):
+            for key in (
+                "full_health",
+                "weapon_repeat",
+                "practice_only",
+                "force_crash",
+                "enemy_clear",
+            ):
                 if type(data[key]) is not bool:
                     raise ValueError("战斗方案开关无效")
             return cls(**data)
@@ -62,6 +71,8 @@ class BattlePlan:
             return False
         active = monitor.snapshot.active_effects
         missing = set(self.effects) - set(active)
+        if player.scene_name != "普通战斗":
+            missing.discard("enemy_clear")
         if not missing:
             return False
         try:
@@ -81,6 +92,8 @@ class BattlePlan:
                     monitor.enable_weapon_repeat()
             if "force_crash" in missing:
                 monitor.enable_force_crash_maintenance()
+            if "enemy_clear" in missing:
+                monitor.enable_enemy_clear_maintenance()
         except RealtimeEffectError:
             # 启用组合时中途失效，不能留下半套授权。
             if monitor.snapshot.state == "connected_read_only":

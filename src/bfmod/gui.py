@@ -66,6 +66,8 @@ from .backups import BackupInfo, list_backup_files, list_backups, verify_backup
 from .battle_hud import BattleHud
 from .battle_plan import BattlePlan
 from .capabilities import (
+    REALTIME_ENEMY_CLEAR,
+    REALTIME_ENEMY_CLEAR_MAINTENANCE,
     REALTIME_FORCE_CRASH_MAINTENANCE,
     REALTIME_FORCE_CRASH_REFILL,
     REALTIME_HEALTH_MAINTENANCE,
@@ -73,6 +75,7 @@ from .capabilities import (
     REALTIME_HEAT_MAINTENANCE,
     REALTIME_HEAT_REDUCE,
     REALTIME_PLAYER_HUD,
+    REALTIME_WAVE_SKIP,
     REALTIME_WEAPON_REPEAT,
     REALTIME_WEAPON_STATE,
     build_capability_matrix,
@@ -445,6 +448,7 @@ class MainWindow(QMainWindow):
             "heal": lambda: self._battle_action(page.restore_health_button),
             "cool": lambda: self._battle_action(page.reduce_heat_button),
             "fc": lambda: self._battle_action(page.refill_force_crash_button),
+            "clear": lambda: self._battle_action(page.clear_enemies_button),
             "pause": self._toggle_battle_pause,
             "hud": lambda: page.show_hud.setChecked(not page.show_hud.isChecked()),
             "stop": self._stop_realtime_monitor,
@@ -502,6 +506,7 @@ class MainWindow(QMainWindow):
             "heat": self.realtime_page.heat_maintenance,
             "weapon_repeat": self.realtime_page.weapon_repeat,
             "force_crash": self.realtime_page.force_crash_maintenance,
+            "enemy_clear": self.realtime_page.enemy_clear,
         }[name]
         if checkbox.isEnabled():
             checkbox.setChecked(enabled)
@@ -574,6 +579,7 @@ class MainWindow(QMainWindow):
             weapon_repeat=page.weapon_repeat.isChecked(),
             practice_only=practice_only,
             force_crash=page.force_crash_maintenance.isChecked(),
+            enemy_clear=page.enemy_clear.isChecked() and not practice_only,
         )
         self.settings.setValue("battle/plan", self.battle_plan.to_json())
         self._sync_battle_assistant()
@@ -620,6 +626,7 @@ class MainWindow(QMainWindow):
                 "heat": "自然冷却" if self.battle_plan.heat == 0 else "热量阈值",
                 "weapon_repeat": "武器重复",
                 "force_crash": "FC 满槽",
+                "enemy_clear": "自动清敌 / 刷波加速",
             }
             active = self.realtime_monitor.snapshot.active_effects if self.realtime_monitor else ()
             if self._battle_plan_paused:
@@ -953,6 +960,8 @@ class MainWindow(QMainWindow):
             heat_target_changed=self._heat_target_changed,
             clear_events=self._clear_realtime_events,
             force_crash_maintenance_changed=self._force_crash_maintenance_changed,
+            clear_enemies=self._clear_realtime_enemies,
+            enemy_clear_changed=self._enemy_clear_changed,
         )
         self.realtime_status = page.status
         self.realtime_connect_button = page.connect_button
@@ -1157,6 +1166,20 @@ class MainWindow(QMainWindow):
             f"Force Crash 补充完成：{state.force_crash}/{state.max_force_crash}"
         )
 
+    def _clear_realtime_enemies(self) -> None:
+        monitor = self.realtime_monitor
+        if monitor is None:
+            return
+        try:
+            result = monitor.clear_enemies_once()
+        except RealtimeEffectError as error:
+            self._show_realtime_action_error("一次清敌", str(error))
+            self._synchronize_realtime_disconnect(monitor)
+            return
+        self._append_realtime_event(
+            f"已请求 {result.requested} 名敌人原生退场；跳过 {result.protected} 名剧情保护对象"
+        )
+
     def _queue_battle_configuration(self, *, practice_only: bool = False) -> None:
         """只排队用户意图；实际启用和写入统一由战斗轮询完成。"""
         monitor = self.realtime_monitor
@@ -1194,6 +1217,9 @@ class MainWindow(QMainWindow):
         self._queue_battle_configuration()
 
     def _force_crash_maintenance_changed(self, enabled: bool) -> None:
+        self._queue_battle_configuration()
+
+    def _enemy_clear_changed(self, enabled: bool) -> None:
         self._queue_battle_configuration()
 
     def _sync_realtime_poll_interval(self, snapshot: RealtimeSnapshot) -> None:
@@ -1629,6 +1655,11 @@ class MainWindow(QMainWindow):
             capability.display_name
             for capability in realtime
             if capability.state in {"read_only", "verified_write"}
+            or (
+                capability.id
+                in {REALTIME_ENEMY_CLEAR, REALTIME_ENEMY_CLEAR_MAINTENANCE, REALTIME_WAVE_SKIP}
+                and capability.state == "experimental_write"
+            )
         )
         self.realtime_page.show_capabilities(
             (
@@ -1653,6 +1684,10 @@ class MainWindow(QMainWindow):
             in {"experimental_write", "verified_write"},
             weapon_repeat=capability_by_id(matrix, REALTIME_WEAPON_REPEAT).state
             == "verified_write",
+            enemy_clear=capability_by_id(matrix, REALTIME_ENEMY_CLEAR).state
+            in {"experimental_write", "verified_write"},
+            enemy_clear_maintenance=capability_by_id(matrix, REALTIME_ENEMY_CLEAR_MAINTENANCE).state
+            in {"experimental_write", "verified_write"},
         )
 
     def _reload_workspace(self) -> None:

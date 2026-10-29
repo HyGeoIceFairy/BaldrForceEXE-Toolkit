@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "baldr-force-modifier"
-version = "1.0.2"
+version = "1.1.1"
 description = "面向 Windows 的 BALDR FORCE EXE 存档编辑与实时战斗修改工具"
 readme = "README.md"
 requires-python = ">=3.11"

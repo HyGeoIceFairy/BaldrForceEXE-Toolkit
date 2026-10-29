@@ -7,6 +7,14 @@ from pathlib import Path
 from struct import pack, unpack
 from typing import Literal
 
+from .combat import (
+    CombatFrameChangedError,
+    CombatValidationError,
+    EnemyClearLayout,
+    EnemyClearResult,
+    read_actor,
+    read_combat_frame,
+)
 from .process_memory import (
     ProcessInstance,
     ProcessMemory,
@@ -14,6 +22,7 @@ from .process_memory import (
     ProcessMemoryError,
     normalized_executable_path,
 )
+from .waves import WaveSkipLayout, read_wave_schedule
 
 
 class RealtimeConnectionError(RuntimeError):
@@ -93,6 +102,9 @@ class EffectPermissions:
     force_crash_refill: bool = False
     weapon_repeat: bool = False
     force_crash_maintenance: bool = False
+    enemy_clear: bool = False
+    enemy_clear_maintenance: bool = False
+    wave_skip: bool = False
 
     def __post_init__(self) -> None:
         if self.health_maintenance and not self.health_restore:
@@ -101,6 +113,10 @@ class EffectPermissions:
             raise ValueError("持续热量写入必须先具有一次降热授权")
         if self.force_crash_maintenance and not self.force_crash_refill:
             raise ValueError("持续 FC 写入必须先具有一次补充授权")
+        if self.enemy_clear_maintenance and not self.enemy_clear:
+            raise ValueError("自动清敌必须先具有一次清敌授权")
+        if self.wave_skip and not self.enemy_clear_maintenance:
+            raise ValueError("跳过刷波等待必须先具有自动清敌授权")
 
 
 @dataclass(frozen=True)
@@ -294,6 +310,8 @@ class RealtimeProfile:
     force_crash_write: ForceCrashWriteLayout | None = None
     weapon_state: WeaponStateLayout | None = None
     weapon_repeat_write: WeaponRepeatWriteLayout | None = None
+    enemy_clear: EnemyClearLayout | None = None
+    wave_skip: WaveSkipLayout | None = None
 
     def __post_init__(self) -> None:
         if not self.fingerprints:
@@ -360,6 +378,12 @@ class RealtimeProfile:
                 raise ValueError("武器重复的安全历史数量必须为尾部追加保留空间")
         elif self.weapon_repeat_write is not None:
             raise ValueError("武器重复写入布局必须同时授权武器重复")
+        if self.permissions.enemy_clear != (self.enemy_clear is not None):
+            raise ValueError("清敌授权与专用退场布局必须同时存在")
+        if self.enemy_clear is not None and (layout is None or self.architecture != "x86"):
+            raise ValueError("清敌必须具有已验证的 x86 玩家布局")
+        if self.permissions.wave_skip != (self.wave_skip is not None):
+            raise ValueError("增援快进授权与专用布局必须同时存在")
 
 
 RealtimeState = Literal["disconnected", "connected_read_only"]
@@ -396,6 +420,8 @@ class RealtimeMonitor:
         self._practice_effects_active = False
         self._force_crash_enabled = False
         self._force_crash_object_token: tuple[int, ...] | None = None
+        self._enemy_clear_enabled = False
+        self._enemy_clear_object_token: tuple[int, ...] | None = None
         self._snapshot = RealtimeSnapshot(
             "disconnected",
             None,
@@ -670,6 +696,225 @@ class RealtimeMonitor:
             token=token,
         )
 
+    def clear_enemies_once(self) -> EnemyClearResult:
+        """仅启动敌方原生退场计时，游戏自行处理计数、奖励和结算。"""
+        self._require_permission("enemy_clear", "一次清敌")
+        connection, layout, base, player, token = self._validated_player_snapshot()
+        self._require_write_safe(player)
+        if player.health <= 0 or player.scene_name != "普通战斗":
+            raise RealtimePlayerUnavailableError("清敌仅适用于存活玩家的普通战斗")
+        clear_layout = self._profile.enemy_clear
+        assert clear_layout is not None
+        requested = 0
+        try:
+            frame = read_combat_frame(connection, clear_layout)
+            if frame.actors[0].attributes != base:
+                raise CombatValidationError("战斗表玩家与已验证玩家组件不一致")
+            targets = tuple(actor for actor in frame.actors if actor.clearable)
+            protected = sum(actor.slot in frame.protected_slots for actor in targets)
+            for actor in targets:
+                if actor.slot in frame.protected_slots:
+                    continue
+                writer = self._adapter.open_process(connection.instance, writable=True)
+                try:
+                    self._verify_fingerprints(writer)
+                    current_base, current, current_token = self._read_player_state(writer, layout)
+                    self._validate_player_state(current, layout)
+                    self._require_write_safe(current)
+                    if (
+                        current_token != token
+                        or current.health <= 0
+                        or current.scene_name != "普通战斗"
+                    ):
+                        raise RealtimePlayerUnavailableError("战斗在清敌前切换")
+                    latest = read_combat_frame(writer, clear_layout)
+                    if latest.actors[0].attributes != current_base:
+                        raise CombatValidationError("清敌前玩家组件不一致")
+                    same = next((item for item in latest.actors if item.slot == actor.slot), None)
+                    if (
+                        same is None
+                        or same.token != actor.token
+                        or not same.clearable
+                        or same.slot in latest.protected_slots
+                    ):
+                        continue
+                    # 再核对待写入对象，避免其他敌人死亡、刷新增援时复用旧槽位。
+                    table_slot = (
+                        writer.instance.image_base
+                        + clear_layout.table_relative_address
+                        + 4 * same.slot
+                    )
+                    if int.from_bytes(writer.read(table_slot, 4), "little") != same.root:
+                        continue
+                    final = read_actor(writer, same.slot, same.root, clear_layout)
+                    if final.token != same.token or not final.clearable:
+                        continue
+                    # 对象采样之后再次检查场景与事件表；切场时不把上一帧意图写入新战斗。
+                    _, current, final_token = self._read_player_state(writer, layout)
+                    self._validate_player_state(current, layout)
+                    self._require_write_safe(current)
+                    if (
+                        final_token != token
+                        or current.health <= 0
+                        or current.scene_name != "普通战斗"
+                    ):
+                        raise RealtimePlayerUnavailableError("清敌最后复核时场景已变化")
+                    event_pointer, event_bytes = latest.events_token
+                    if (
+                        int.from_bytes(
+                            writer.read(
+                                writer.instance.image_base
+                                + clear_layout.events_pointer_relative_address,
+                                4,
+                            ),
+                            "little",
+                        )
+                        != event_pointer
+                        or writer.read(event_pointer, len(event_bytes)) != event_bytes
+                        or int.from_bytes(writer.read(table_slot, 4), "little") != final.root
+                    ):
+                        continue
+                    writer.write(
+                        final.attributes + clear_layout.removal_timer_offset, pack("<h", 1)
+                    )
+                    requested += 1
+                    # 正常死亡可以立刻移除或替换槽位，不能再读已释放的组件。
+                    if int.from_bytes(writer.read(table_slot, 4), "little") == final.root:
+                        after = read_actor(writer, final.slot, final.root, clear_layout)
+                        if after.token == final.token and after.removal_timer not in (0, 1):
+                            raise CombatValidationError("敌方退场计时写后复核失败")
+                    self._verify_fingerprints(writer)
+                finally:
+                    writer.close()
+        except CombatFrameChangedError as error:
+            if not requested:
+                raise RealtimeFrameUnstableError(str(error)) from error
+        except (RealtimePlayerUnavailableError, RealtimeWritePausedError):
+            if not requested:
+                raise
+        except (
+            ProcessMemoryError,
+            RealtimeConnectionError,
+            CombatValidationError,
+            RealtimeEffectError,
+        ) as error:
+            self.disconnect(f"清敌失败，已全部停写：{error}")
+            raise RealtimeEffectError(str(error)) from error
+        return EnemyClearResult(requested, protected)
+
+    def advance_enemy_wave_once(self) -> int:
+        """复现原生全灭后的增援快进；绝不写真实战斗用时、结果或结束倒计时。"""
+        self._require_permission("wave_skip", "跳过刷波等待")
+        connection, player_layout, player_base, player, token = self._validated_player_snapshot()
+        self._require_write_safe(player)
+        if player.health <= 0 or player.scene_name != "普通战斗":
+            raise RealtimePlayerUnavailableError("增援快进等待普通战斗")
+        clear_layout = self._profile.enemy_clear
+        wave_layout = self._profile.wave_skip
+        assert clear_layout is not None and wave_layout is not None
+        write_started = False
+        try:
+            frame = read_combat_frame(connection, clear_layout)
+            if frame.actors[0].attributes != player_base:
+                raise CombatValidationError("增援快进前玩家组件不一致")
+            schedule = read_wave_schedule(connection, wave_layout, frame)
+            if (
+                schedule is None
+                or schedule.next_time is None
+                or schedule.next_time <= schedule.clock
+            ):
+                return 0
+            writer = self._adapter.open_process(connection.instance, writable=True)
+            try:
+                self._verify_fingerprints(writer)
+                current_base, current, current_token = self._read_player_state(
+                    writer, player_layout
+                )
+                self._validate_player_state(current, player_layout)
+                self._require_write_safe(current)
+                if (
+                    current_token != token
+                    or current.health <= 0
+                    or current.scene_name != "普通战斗"
+                ):
+                    raise RealtimePlayerUnavailableError("场景在增援快进前变化")
+                current_frame = read_combat_frame(writer, clear_layout)
+                if current_frame.actors[0].attributes != current_base:
+                    raise CombatValidationError("增援快进写前玩家组件不一致")
+                current_schedule = read_wave_schedule(writer, wave_layout, current_frame)
+                if (
+                    current_schedule is None
+                    or current_schedule.token != schedule.token
+                    or current_schedule.next_time is None
+                    or current_schedule.next_time <= current_schedule.clock
+                ):
+                    return 0
+                # 队列采样之后重新确认玩家、场景与对象表，避免下一波恰在此时入场。
+                _, final_player, final_token = self._read_player_state(writer, player_layout)
+                self._validate_player_state(final_player, player_layout)
+                self._require_write_safe(final_player)
+                if (
+                    final_token != token
+                    or final_player.health <= 0
+                    or final_player.scene_name != "普通战斗"
+                ):
+                    raise RealtimePlayerUnavailableError("增援快进最后复核时场景已变化")
+                final_frame = read_combat_frame(writer, clear_layout)
+                if final_frame.actors[0].attributes != current_base:
+                    raise RealtimePlayerUnavailableError("增援快进最后复核时玩家已替换")
+                final_schedule = read_wave_schedule(writer, wave_layout, final_frame)
+                if (
+                    final_schedule is None
+                    or final_schedule.token != schedule.token
+                    or final_schedule.next_time is None
+                    or final_schedule.next_time <= final_schedule.clock
+                ):
+                    return 0
+                skipped = final_schedule.next_time - final_schedule.clock
+                write_started = True
+                writer.write(final_schedule.attributes + 4, pack("<i", final_schedule.next_time))
+                # 正常调度可立刻消费记录；只核对同一控制器的时钟，不要求记录保持不变。
+                root = int.from_bytes(
+                    writer.read(writer.instance.image_base + wave_layout.controller_pointer_rva, 4),
+                    "little",
+                )
+                if root == final_schedule.controller:
+                    attributes = int.from_bytes(writer.read(root + 0x38, 4), "little")
+                    if attributes == final_schedule.attributes:
+                        after_clock = int.from_bytes(
+                            writer.read(attributes + 4, 4), "little", signed=True
+                        )
+                        if not final_schedule.next_time <= after_clock <= 999999:
+                            raise CombatValidationError("增援时钟写后复核失败")
+                self._verify_fingerprints(writer)
+                return skipped
+            finally:
+                writer.close()
+        except CombatFrameChangedError as error:
+            if write_started:
+                self.disconnect("增援快进写后状态变化，已全部停写")
+            raise RealtimeFrameUnstableError(str(error)) from error
+        except (RealtimePlayerUnavailableError, RealtimeWritePausedError):
+            raise
+        except (
+            ProcessMemoryError,
+            RealtimeConnectionError,
+            CombatValidationError,
+            RealtimeEffectError,
+        ) as error:
+            self.disconnect(f"增援快进失败，已全部停写：{error}")
+            raise RealtimeEffectError(str(error)) from error
+
+    def enable_enemy_clear_maintenance(self) -> None:
+        self._require_permission("enemy_clear_maintenance", "自动清敌")
+        _, _, _, player, token = self._validated_player_snapshot()
+        self._require_write_safe(player)
+        if player.health <= 0 or player.scene_name != "普通战斗":
+            raise RealtimePlayerUnavailableError("自动清敌等待普通战斗")
+        self._enemy_clear_enabled = True
+        self._enemy_clear_object_token = token
+        self._refresh_snapshot("自动清敌已启用")
+
     def enable_health_maintenance(self, target: int) -> None:
         self._require_permission("health_maintenance", "持续血量")
         _, _, _, state, token = self._validated_player_snapshot()
@@ -747,6 +992,7 @@ class RealtimeMonitor:
 
     def tick_effects(self) -> RealtimeSnapshot:
         state = self.poll()
+        effect_message = "实时效果已安全执行"
         if state.state != "connected_read_only":
             return state
         if (
@@ -754,6 +1000,7 @@ class RealtimeMonitor:
             and self._heat_target is None
             and not self._weapon_repeat_enabled
             and not self._force_crash_enabled
+            and not self._enemy_clear_enabled
         ):
             return state
         try:
@@ -768,6 +1015,7 @@ class RealtimeMonitor:
                     self._heat_object_token,
                     self._weapon_object_token,
                     self._force_crash_object_token,
+                    self._enemy_clear_object_token,
                 )
                 if token is not None
             )
@@ -816,6 +1064,19 @@ class RealtimeMonitor:
                     layout=layout,
                     token=current_token,
                 )
+            if self._enemy_clear_enabled and player.scene_name == "普通战斗":
+                result = self.clear_enemies_once()
+                skipped = (
+                    self.advance_enemy_wave_once() if self._profile.permissions.wave_skip else 0
+                )
+                effect_message = (
+                    f"自动清敌：已请求 {result.requested} 名敌人退场；"
+                    f"跳过 {result.protected} 名剧情保护对象"
+                    if result.requested or result.protected
+                    else "自动清敌：等待敌人或后续增援"
+                )
+                if skipped:
+                    effect_message += f"；已跳过 {skipped} 帧刷波等待"
         except RealtimePlayerUnavailableError as error:
             self._clear_maintenance_targets()
             return self._refresh_snapshot(f"等待进入战斗：{error}")
@@ -833,7 +1094,7 @@ class RealtimeMonitor:
             "connected_read_only",
             self._require_connection().instance,
             True,
-            "实时效果已安全执行",
+            effect_message,
             self._active_effects(),
         )
         return self._snapshot
@@ -1281,6 +1542,9 @@ class RealtimeMonitor:
             "force_crash_refill",
             "force_crash_maintenance",
             "weapon_repeat",
+            "enemy_clear",
+            "enemy_clear_maintenance",
+            "wave_skip",
         ],
         display_name: str,
     ) -> None:
@@ -1302,6 +1566,8 @@ class RealtimeMonitor:
             effects.append("weapon_repeat")
         if self._force_crash_enabled:
             effects.append("force_crash")
+        if self._enemy_clear_enabled:
+            effects.append("enemy_clear")
         return tuple(effects)
 
     def _clear_maintenance_targets(self) -> None:
@@ -1315,6 +1581,8 @@ class RealtimeMonitor:
         self._practice_effects_active = False
         self._force_crash_enabled = False
         self._force_crash_object_token = None
+        self._enemy_clear_enabled = False
+        self._enemy_clear_object_token = None
 
     def _refresh_snapshot(self, message: str) -> RealtimeSnapshot:
         connection = self._require_connection()

@@ -1,4 +1,4 @@
-param([switch]$Incremental)
+param([switch]$Incremental, [switch]$Stable)
 
 $ErrorActionPreference = "Stop"
 
@@ -89,7 +89,8 @@ foreach ($VersionResourceFragment in $RequiredVersionResourceFragments) {
     }
 }
 $ReleaseArchiveName = "$ApplicationName-v$Version-windows-x64.zip"
-$VersionedDistributionRoot = Join-Path $ProjectRoot "dist\v$Version-release"
+$DistributionSuffix = if ($Stable) { "stable" } else { "release" }
+$VersionedDistributionRoot = Join-Path $ProjectRoot "dist\v$Version-$DistributionSuffix"
 $OriginalBuildPath = $env:PATH
 $RuntimeLibraryBin = Join-Path (Split-Path $PythonExecutable -Parent) "Library\bin"
 

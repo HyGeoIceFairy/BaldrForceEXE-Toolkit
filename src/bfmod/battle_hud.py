@@ -101,6 +101,7 @@ class BattleHud(QWidget):
                 ("heat", "热量阈值", "heat", 5),
                 ("weapon_repeat", "同连段武器重复", None, 1),
                 ("force_crash", "锁 FC 满槽", None, 1),
+                ("enemy_clear", "自动清敌 / 刷波加速", None, 1),
             )
         ):
             checkbox = QCheckBox(label)
@@ -132,8 +133,8 @@ class BattleHud(QWidget):
                 )
                 self.action_buttons[f"preset_{name}"] = preset
                 effects_grid.addWidget(preset, row_index, 2)
-        effects_grid.addWidget(QLabel("一次降热目标"), 4, 0)
-        effects_grid.addWidget(self._target_control("heat_once", 5), 4, 1, 1, 2)
+        effects_grid.addWidget(QLabel("一次降热目标"), 5, 0)
+        effects_grid.addWidget(self._target_control("heat_once", 5), 5, 1, 1, 2)
         buttons.addLayout(effects_grid)
         row = QHBoxLayout()
         for key, label in (("heal", "回血 · F6"), ("cool", "降热 · F7"), ("fc", "FC · F8")):
@@ -143,6 +144,11 @@ class BattleHud(QWidget):
             self.action_buttons[key] = button
             row.addWidget(button)
         buttons.addLayout(row)
+        clear_button = QPushButton("一次清敌")
+        clear_button.clicked.connect(actions.get("clear", lambda: None))
+        clear_button.setEnabled(False)
+        self.action_buttons["clear"] = clear_button
+        buttons.addWidget(clear_button)
         row = QHBoxLayout()
         for key, label in (("connect", "连接游戏"), ("load", "上次方案"), ("practice", "练习组合")):
             button = QPushButton(label)
@@ -259,6 +265,7 @@ class BattleHud(QWidget):
             ("heal", page.restore_health_button),
             ("cool", page.reduce_heat_button),
             ("fc", page.refill_force_crash_button),
+            ("clear", page.clear_enemies_button),
             ("connect", page.connect_button),
             ("load", page.load_plan_button),
             ("practice", page.practice_preset_button),
@@ -273,6 +280,7 @@ class BattleHud(QWidget):
             ("heat", page.heat_maintenance),
             ("weapon_repeat", page.weapon_repeat),
             ("force_crash", page.force_crash_maintenance),
+            ("enemy_clear", page.enemy_clear),
         ):
             checkbox = self.effect_checks[name]
             with QSignalBlocker(checkbox):

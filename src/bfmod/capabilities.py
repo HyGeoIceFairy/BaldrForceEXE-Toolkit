@@ -22,6 +22,9 @@ CapabilityId: TypeAlias = Literal[
     "realtime_force_crash_maintenance",
     "realtime_weapon_state",
     "realtime_weapon_repeat",
+    "realtime_enemy_clear",
+    "realtime_enemy_clear_maintenance",
+    "realtime_wave_skip",
 ]
 CapabilityState: TypeAlias = Literal[
     "unavailable",
@@ -43,6 +46,9 @@ REALTIME_FORCE_CRASH_REFILL: CapabilityId = "realtime_force_crash_refill"
 REALTIME_FORCE_CRASH_MAINTENANCE: CapabilityId = "realtime_force_crash_maintenance"
 REALTIME_WEAPON_STATE: CapabilityId = "realtime_weapon_state"
 REALTIME_WEAPON_REPEAT: CapabilityId = "realtime_weapon_repeat"
+REALTIME_ENEMY_CLEAR: CapabilityId = "realtime_enemy_clear"
+REALTIME_ENEMY_CLEAR_MAINTENANCE: CapabilityId = "realtime_enemy_clear_maintenance"
+REALTIME_WAVE_SKIP: CapabilityId = "realtime_wave_skip"
 
 
 @dataclass(frozen=True)
@@ -213,6 +219,30 @@ def build_capability_matrix(
             profile,
             ("普通槽门禁和历史安全边界尚未完成写入取证",),
         ),
+        _profile_player_capability(
+            REALTIME_ENEMY_CLEAR,
+            "一次清敌",
+            realtime_support,
+            profile_matches_installation,
+            profile,
+            ("原生敌方退场尚未完成取证",),
+        ),
+        _profile_player_capability(
+            REALTIME_ENEMY_CLEAR_MAINTENANCE,
+            "自动清敌",
+            realtime_support,
+            profile_matches_installation,
+            profile,
+            ("自动清敌未授权",),
+        ),
+        _profile_player_capability(
+            REALTIME_WAVE_SKIP,
+            "跳过刷波等待",
+            realtime_support,
+            profile_matches_installation,
+            profile,
+            ("独立增援时钟尚未完成写入取证",),
+        ),
     )
 
 
@@ -243,6 +273,21 @@ def _profile_player_capability(
     if capability_id == REALTIME_FORCE_CRASH_MAINTENANCE and state == "experimental_write":
         capability_reasons = (
             "复用已验证的 0–10000 仪表和一次补充写入；持续锁满已覆盖故障门禁，待用户实机复测",
+        )
+    if (
+        capability_id in {REALTIME_ENEMY_CLEAR, REALTIME_ENEMY_CLEAR_MAINTENANCE}
+        and state != "unavailable"
+    ):
+        capability_reasons = (
+            "仅普通战斗；按敌方阵营启动原生退场，已观察到敌方计数、增援与结算。"
+            "不改胜利标记；跳过剧情事件保护对象。其他关卡、首领与特殊目标仍需人工复测。",
+        )
+    if capability_id == REALTIME_WAVE_SKIP and state != "unavailable":
+        capability_reasons = (
+            "随自动清敌启用；本波非友军移除后，只将独立增援时钟推进到下一出场时刻。"
+            "实测 12→500 时实际战斗计时保持 7；增援、击败与成长处理正常，"
+            "用户确认胜利、奖励和剧情均正常。"
+            "不改实际用时、结算倒计时或剧情结果；剧情保护、循环队列和未知状态不快进。",
         )
     return Capability(
         capability_id,

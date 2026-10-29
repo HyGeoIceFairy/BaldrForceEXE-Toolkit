@@ -156,6 +156,45 @@ class BattleAssistantGuiTests(unittest.TestCase):
         hud.target_controls["heat_once"].setValue(25)
         self.assertEqual(self.window.realtime_page.heat_once_target.value(), 25)
 
+    def test_enemy_clear_can_be_queued_before_battle_and_edited_from_hud(self) -> None:
+        monitor = self._enable_battle_controls()
+        page = self.window.realtime_page
+        page.set_effect_capabilities(
+            hud=True,
+            health_restore=True,
+            health_maintenance=True,
+            heat_reduce=True,
+            heat_maintenance=True,
+            enemy_clear=True,
+            enemy_clear_maintenance=True,
+        )
+        page.clear_player_state("战前")
+        self.window._sync_battle_assistant()
+        hud = self.window.battle_hud
+        self.assertTrue(hud.effect_checks["enemy_clear"].isEnabled())
+        self.assertFalse(hud.action_buttons["clear"].isEnabled())
+        hud.effect_checks["enemy_clear"].click()
+        self.assertTrue(self.window.battle_plan.enemy_clear)
+        monitor.clear_enemies_once.assert_not_called()
+        monitor.enable_enemy_clear_maintenance.assert_not_called()
+        page.show_player_state(50, 100, 0, 130, 0, scene_name="普通战斗")
+        self.window._sync_battle_assistant()
+        self.assertTrue(hud.action_buttons["clear"].isEnabled())
+        page.show_player_state(50, 100, 0, 130, 3, scene_name="练习战斗")
+        self.window._sync_battle_assistant()
+        self.assertFalse(hud.action_buttons["clear"].isEnabled())
+        self.window._toggle_battle_pause()
+        hud.effect_checks["enemy_clear"].click()
+        self.assertTrue(self.window._battle_plan_paused)
+        self.assertFalse(self.window.battle_plan.enemy_clear)
+        monitor.clear_enemies_once.assert_not_called()
+
+    def test_practice_preset_does_not_retain_auto_enemy_clear(self) -> None:
+        self._enable_battle_controls()
+        self.window.realtime_page.enemy_clear.setChecked(True)
+        self.window._capture_battle_plan(practice_only=True)
+        self.assertFalse(self.window.battle_plan.enemy_clear)
+
     def test_paused_hud_edits_change_plan_without_enabling_any_effect(self) -> None:
         monitor = self._enable_battle_controls()
         self.window.battle_plan = BattlePlan(health=100, full_health=True, heat=0)

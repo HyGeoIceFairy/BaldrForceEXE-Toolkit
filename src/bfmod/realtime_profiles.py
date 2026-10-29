@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
+from .combat import EnemyClearLayout
 from .realtime import (
     AddressPath,
     BattleSceneSignature,
@@ -22,6 +23,7 @@ from .realtime import (
     WeaponStateLayout,
 )
 from .versioning import KNOWN_FINGERPRINTS, InstallationIdentity
+from .waves import WaveSkipLayout
 
 RealtimeCapabilityId: TypeAlias = Literal[
     "realtime_connection",
@@ -34,6 +36,9 @@ RealtimeCapabilityId: TypeAlias = Literal[
     "realtime_force_crash_maintenance",
     "realtime_weapon_state",
     "realtime_weapon_repeat",
+    "realtime_enemy_clear",
+    "realtime_enemy_clear_maintenance",
+    "realtime_wave_skip",
 ]
 RealtimeCapabilityLevel: TypeAlias = Literal[
     "read_only",
@@ -86,6 +91,22 @@ class RealtimeProfileDefinition:
             "verified_write",
         }:
             raise ValueError("持续 FC 能力必须先声明一次补充能力")
+        if support.get("realtime_enemy_clear_maintenance") in {
+            "experimental_write",
+            "verified_write",
+        } and support.get("realtime_enemy_clear") not in {
+            "experimental_write",
+            "verified_write",
+        }:
+            raise ValueError("自动清敌必须先声明一次清敌能力")
+        if support.get("realtime_wave_skip") in {
+            "experimental_write",
+            "verified_write",
+        } and support.get("realtime_enemy_clear_maintenance") not in {
+            "experimental_write",
+            "verified_write",
+        }:
+            raise ValueError("跳过刷波等待必须先声明自动清敌能力")
 
 
 @dataclass(frozen=True)
@@ -170,6 +191,57 @@ KNOWN_REALTIME_PROFILE = RealtimeProfileDefinition(
             0x1AE82,
             bytes.fromhex("8DBE14010000B90C000000B819FC19FC889E46010000F3AB66AB"),
         ),
+        InstructionFingerprint(
+            "原生退场计时设置与剧情保护",
+            0x1B240,
+            bytes.fromhex(
+                "8B44240456578B7C24108B703885FF7E1F8B40686A008B4804516A03E8EFFA0200"
+                "83C40C83F80174076689BE4E0100005F5EC3"
+            ),
+        ),
+        InstructionFingerprint(
+            "原生计时退场与事件推进",
+            0x1B280,
+            bytes.fromhex(
+                "568B7424088B4E38668B814E0100006685C0750433C05EC3486685C06689814E010000"
+                "7E0433C05EC38B4668807803017505E8192103006A0156E891FCFFFF83C408B8010000005EC3"
+            ),
+        ),
+        InstructionFingerprint(
+            "剧情事件按槽位拦截退场",
+            0x4AE82,
+            bytes.fromhex(
+                "8B4C242085C9741385D20F8406FFFFFF66837A18000F8CFBFEFFFF8B0C8D008A53008B37"
+                "8B49683B710475B52C04895C2414F6D81BC024F283C00F"
+            ),
+        ),
+        InstructionFingerprint(
+            "原生阵营存活计数递减",
+            0x4BE7D,
+            bytes.fromhex("8B048D008A53008B48680FBE41038A8860495700FEC9888860495700B801000000C3"),
+        ),
+        InstructionFingerprint(
+            "原生全灭后增援时钟快进",
+            0x4D44F,
+            bytes.fromhex(
+                "C746043F420F008D4E10BF40000000B8010000003841FC750C8B118B5E043BD37D0389560483C1204F75E9"
+            ),
+        ),
+        InstructionFingerprint(
+            "增援时钟与同屏限制",
+            0x4D54D,
+            bytes.fromhex(
+                "807EF801751C3B1E7D188B4D048B46FC3BC87C0E57E83900000083C40485C0741D434783C62083FF407CD58B45045F405E894504"
+            ),
+        ),
+        InstructionFingerprint(
+            "增援记录消耗与计数", 0x4D687, bytes.fromhex("C6430C028B0F83C41449890F")
+        ),
+        InstructionFingerprint(
+            "独立实际战斗计时",
+            0x4EF52,
+            bytes.fromhex("A128064E008B0D2C064E00406A0141506A00A328064E00890D2C064E00E8DCBDFFFF"),
+        ),
     ),
     supported_capabilities=(
         ProfileCapabilitySupport("realtime_connection", "read_only"),
@@ -182,11 +254,14 @@ KNOWN_REALTIME_PROFILE = RealtimeProfileDefinition(
         ProfileCapabilitySupport("realtime_force_crash_maintenance", "verified_write"),
         ProfileCapabilitySupport("realtime_weapon_state", "read_only"),
         ProfileCapabilitySupport("realtime_weapon_repeat", "verified_write"),
+        ProfileCapabilitySupport("realtime_enemy_clear", "verified_write"),
+        ProfileCapabilitySupport("realtime_enemy_clear_maintenance", "verified_write"),
+        ProfileCapabilitySupport("realtime_wave_skip", "verified_write"),
     ),
     evidence_source="本地受控取证记录（未纳入发行包）",
     verified_date="2026-10-30",
     read_validation=(
-        "路径、进程实例、x86 架构、十五处模块 RVA 指纹、动态对象链、玩家控制更新、"
+        "路径、进程实例、x86 架构、模块 RVA 指纹、动态对象链、玩家控制更新、"
         "玩家身份、普通与练习战斗场景、分段生命、普通热量和上限 10000 的 Force "
         "Crash 仪表、13 个状态槽实际武器 ID、最近槽及当前连段实际武器历史均已通过独立会话只读验证"
     ),
@@ -199,13 +274,17 @@ KNOWN_REALTIME_PROFILE = RealtimeProfileDefinition(
         "12 个普通槽门禁，并以 24→23 回退保护 25 项历史；隔离练习中已完成同一实际武器 ID 0"
         "连续 26 次真实命中，总伤害 1680、Force Crash 自然增长 3360，且保留原生伤害衰减与连段恢复。"
         "2026-10-30 用户实机确认 HUD 置顶与勾选、跨场次恢复、战前配置、"
-        "FC 满槽维持及连续发动后补满正常"
+        "FC 满槽维持及连续发动后补满正常。普通战斗已完成原生清敌、跨关及增援快进验收："
+        "增援时钟 12→500 时实际战斗计时维持 7，随后增援正常出场、击败、结算和处理成长；"
+        "用户确认胜利、奖励和后续剧情正常，并于 2026-10-30 确认候选版可正式发布"
     ),
     known_failures=(
         "只在已验证的普通或练习战斗场景显示；对白、菜单、结算及对象切换期间主动清空",
         "Force Crash 发动瞬态保持只读 HUD，但暂停所有一次和持续写入",
         "持续效果采用轮询纠正；热量功能仍调用游戏自身归零路径，武器重复功能独立维护普通槽门禁",
         "不修改游戏程序、不注入代码",
+        "清敌仅限已验证普通战斗：剧情保护对象跳过；其他关卡、首领及特殊战斗不扩大为已验收声明",
+        "刷波加速只在场上非友军均移除且队列受支持时推进独立增援时钟；不修改实际战斗计时、结果与脚本",
     ),
 )
 
@@ -241,6 +320,9 @@ def select_realtime_profile(
                     force_crash_refill=True,
                     force_crash_maintenance=True,
                     weapon_repeat=True,
+                    enemy_clear=True,
+                    enemy_clear_maintenance=True,
+                    wave_skip=True,
                 ),
                 segmented_health_write=SegmentedHealthWriteLayout(),
                 # 游戏只在旧热量大于零且本帧自然冷却到零时恢复连段武器。
@@ -258,6 +340,8 @@ def select_realtime_profile(
                     weapon_id_maximum=255,
                 ),
                 weapon_repeat_write=WeaponRepeatWriteLayout(safe_history_count=23),
+                enemy_clear=EnemyClearLayout(),
+                wave_skip=WaveSkipLayout(),
             ),
         )
     return None
